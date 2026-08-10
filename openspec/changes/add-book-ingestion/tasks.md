@@ -20,11 +20,12 @@
 
 ## 2. Seam 2 — NCL CSV 解析（`books/sources/ncl.py` 的純解析函式）
 
-- [ ] 2.1 手造最小 CSV 測試樣本（正常列、多 ISBN 列、缺 ISBN 列、缺分類欄位、空檔案），存至 `books/tests/fixtures/`
-- [ ] 2.2 **(red)** 針對 CSV 解析函式（輸入 CSV bytes、輸出中介資料結構，不含網路下載）撰寫測試，涵蓋 2.1 的各種樣本；確認測試先為紅燈
-- [ ] 2.3 **(green)** 實作解析邏輯（含編碼/BOM/分隔符號偵測、欄位對應、單列多 ISBN 拆解），讓 2.2 全數通過
-- [ ] 2.4 下載邏輯（依月份組網址、HTTP 下載、404/逾時/中斷處理）屬於 I/O 邊界，不納入本 seam 單元測試，改由 7.x/8.x 整合測試與人工 smoke test 涵蓋
-- [ ] 2.5 第一次實際下載月度 CSV 後，確認真實年月格式、編碼、分隔符號，回頭補齊/替換 2.1 的 fixture 與 2.2 的測試案例
+> 已實際下載 4 個月份（2024-12、2025-01、2025-07、2025-08）NCL CSV 確認真實契約，記錄於 design.md 決策 8：西元年月、UTF-8 with BOM、標準逗號分隔 CSV、27 欄（以欄位名稱對應，非固定順序）、無封面欄位、每列固定 1 個 ISBN（無多 ISBN 列，故拿掉原「單列多 ISBN 拆解」案例）。2.5（回頭確認契約）已提前完成，不再需要事後補齊。
+
+- [x] 2.1 依實測欄位結構手造最小 CSV 測試樣本（正常列、缺 ISBN 列、ISBN 格式無效列、缺分類號欄位列、空檔案），存至 `books/tests/fixtures/`（4 個月份真實資料衍生的 4 筆正常列，涵蓋單一作者+角色字尾、句點黏連角色字尾、逗號多作者+引號欄位、分號+逗號混合作者群組等真實樣態）
+- [x] 2.2 **(red)** 針對 CSV 解析函式（輸入 CSV bytes、輸出中介資料結構，不含網路下載）撰寫測試，涵蓋 2.1 的各種樣本；確認測試先為紅燈（`ModuleNotFoundError: books.sources.ncl`）
+- [x] 2.3 **(green)** 實作解析邏輯（`utf-8-sig` 解碼、`csv.DictReader` 依欄位名稱對應；另於 `books/services/schema.py` 新增 `split_authors`——依真實資料切分並去除角色字尾/著/編著/譯/主編等，見 `books/tests/test_schema.py::TestSplitAuthors`——與 `CategoryInput`/`ParsedBookRecord`/`ParseFailure` 中介資料結構），讓 2.2 全數通過
+- [x] 2.4 下載邏輯（依月份組網址、HTTP 下載、404/逾時/中斷處理）屬於 I/O 邊界，不納入本 seam 單元測試，改由 7.x/8.x 整合測試與人工 smoke test 涵蓋
 
 ## 3. Seam 3 — Google Books 查詢（`books/sources/google_books.py`）
 

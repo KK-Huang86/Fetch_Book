@@ -7,7 +7,7 @@
 - 資料持久化採 **PostgreSQL**，透過 **Django ORM** 定義 models、**Django migrations** 管理 schema 變更。
 - 執行方式為 **Celery + Celery Beat** 每日排程觸發，broker 為 **Redis**；另保留 Django management command 供手動觸發。
 - 專案目前無既有程式碼。
-- 尚未確認 NCL CSV 是否實際包含封面圖片欄位——若沒有，v1 的封面幾乎全部來自 Google Books（僅能 hotlink，見下），S3 儲存路徑實際上很少或不會被使用；此點列為 Open Questions，待第一次下載實際 CSV 後確認，不影響本設計的架構決定。
+- 已下載實際 CSV（2024-12、2025-01、2025-07、2025-08 共 4 個月份）確認：NCL CSV **不包含封面圖片欄位**，v1 的封面因此幾乎全部來自 Google Books（僅能 hotlink，見下），S3 儲存路徑實務上很少或不會被使用；架構決策不受影響，維持原設計（保留 S3 路徑供 NCL 未來若提供封面欄位時使用）。
 
 ## Goals / Non-Goals
 
@@ -97,9 +97,9 @@ IngestionRun
 
 IngestionFailure
   id            AutoField PK
-  run           ForeignKey(IngestionRun)
+  run           ForeignKey(IngestionRun, related_name="failures")
   isbn          CharField, null=True
-  stage         CharField, choices=["ncl_parse", "google_lookup"]
+  stage         CharField, choices=["ncl_download", "ncl_parse", "google_lookup", "book_upsert", "cover_storage", "ingestion"]
   error_code    CharField
   message       TextField
   created_at    DateTimeField(auto_now_add=True)
@@ -115,8 +115,8 @@ IngestionFailure
 - 比對前一律移除連字號、空白，正規化為 ISBN-13（ISBN-10 依標準演算法轉換），寫入 `isbn13`／`isbn10` 兩欄。
 - 13 碼數字且 checksum 正確，仍須以 `978` 或 `979` 開頭才視為 ISBN；一般 EAN-13（例如商品條碼）checksum 也可能算對，但不是書籍 ISBN，MUST 回傳無效。
 - Checksum 無效：該筆資料不寫入 `Book`（無法作為 upsert key），記錄一筆 `IngestionFailure`（`stage=ncl_parse`）。
-- NCL 單列包含多個 ISBN（例如套書）：拆解為多筆獨立紀錄。
-- 完全無 ISBN 的 NCL 紀錄：不寫入資料庫，記錄一筆 `IngestionFailure`。
+- NCL 單列固定對應一個 ISBN（已實測 4 個月份、14000+ 筆資料驗證，無單列多 ISBN 情況，見決策 8），故不設計拆解邏輯。
+- 完全無 ISBN 或 ISBN 無效（含 checksum 錯誤、非 978/979 開頭）的 NCL 紀錄：不寫入資料庫，記錄一筆 `IngestionFailure`（`stage=ncl_parse`）。
 - Google Books 回傳多個 `industryIdentifiers` 時，優先取 `ISBN_13`，其次 `ISBN_10`（轉換為 13 碼）。
 - 同一來源同一 ISBN 於同一次 CSV 中重複出現：以最後一筆為準，記錄一筆 warning 至 `IngestionFailure`。
 
@@ -139,13 +139,16 @@ IngestionFailure
 - S3 + CloudFront（含 OAC）為一次性基礎設施佈建，不在本次程式碼 tasks 範圍內（見 Open Questions）。
 
 ### 8. NCL CSV 契約
-- 網址：`https://isbn.ncl.edu.tw/NEW_ISBNNet/opendata/[YYYYMM]_isbn.csv`（民國年或西元年待第一次下載時確認實際格式，記錄於實作註記）。
-- 編碼：下載後先偵測 BOM／編碼（常見為 UTF-8 或 Big5），統一轉為 UTF-8 處理。
-- 分隔符號：以實際下載檔案確認，解析邏輯集中於 `books/sources/ncl.py`。
-- 欄位對應表於實作時依實際欄位名稱建立，集中管理於同一模組。
+- 網址：`https://isbn.ncl.edu.tw/NEW_ISBNNet/opendata/[YYYYMM]_isbn.csv`，**年月為西元年**（已實測驗證：`202508` 回 200，民國年 `11508` 回 404）。
+- 編碼：**UTF-8 with BOM**（已實測確認，開頭 `EF BB BF`）；解析時以 `utf-8-sig` 讀取去除 BOM。
+- 分隔符號：**標準逗號分隔 CSV，RFC4180 quoting**（含逗號的欄位以雙引號包住），Python 內建 `csv` 模組可直接處理，不需自訂分隔符號偵測。
+- 欄位對應**以欄位名稱對應（`csv.DictReader`），不得用固定欄位順序（index）**——已實測發現欄位名稱曾經改版：2025-01 為「常用分類」「是否為翻譯書」，2025-07 起變成「建議上架分類」「是否為引進版權著作」，證實了本文件「Risks」一節原本預期的欄位調整風險確實發生過。
+- 已知欄位（27 欄，2025-07/08 版本）：申請書名、作者、出版機構、版次、預訂出版日、標題、0-3歲嬰幼兒圖書分齡主題詞、3-6歲幼兒圖書分齡主題詞、適讀對象、分級註記、分類號、ISBN、開數、頁數、得獎紀錄、資料類型、建議上架分類、作品語文、作品語文(其他)、圖書主題、是否為引進版權著作、定價、裝訂方式、其他裝訂方式、出版形式、關鍵字、出版機構類型。無封面圖片相關欄位。
+- ISBN 欄位：**每列固定一個 ISBN**（13 碼數字），已實測 4 個月份、共 14000+ 筆資料，無一列多個 ISBN 的情況——每列對應一次出版品登記申請，資料模型上不會有多值 ISBN，故不設計「單列多 ISBN 拆解」邏輯（原 tasks.md 2.1/2.2 的此案例已移除）。仍須處理 ISBN 欄位缺漏／格式無效的邊界情況（實測樣本中未出現，但不保證未來不會發生，需防禦性處理）。
+- 分類號欄位：實測約 67% 為空值，是正常情況，非例外。
 - 404（該月份尚未 release）：在排程情境下視為正常情況（決策 10）；在手動觸發情境下視為明確錯誤回報給使用者。
 - 下載中斷 → 交由 Celery task 層級重試（決策 10）；空檔案 → 視為 0 筆資料，`IngestionRun.status='succeeded'` 但 `total=0`。
-- 測試固定使用保存於專案內的 CSV fixture，不依賴即時網路請求。
+- 測試固定使用保存於專案內的 CSV fixture（依實測欄位結構手造），不依賴即時網路請求。
 
 ### 9. Google Books Client 與重試策略
 - 逾時設定：連線 5 秒、讀取 10 秒。
@@ -212,7 +215,7 @@ fetch_book/
 ## Risks / Trade-offs
 
 - [Risk] Google Books API 配額可能不足以逐筆查詢整月新書 → Mitigation：僅在缺封面/缺分類且尚未 enrichment 過時才查詢；序列呼叫控制速率
-- [Risk] NCL CSV 欄位格式或網址規則（年月格式）未來若調整，解析邏輯可能失效 → Mitigation：解析與網址組成邏輯集中在 `books/sources/ncl.py`，並以 fixture 測試鎖定目前已知行為
+- [Risk] NCL CSV 欄位格式調整（已實測證實發生過，見決策 8）→ Mitigation：解析邏輯以欄位名稱對應（非固定順序），並以 fixture 測試鎖定目前已知欄位結構；若未來再次改版，只需更新欄位對應表與 fixture，不影響其餘架構
 - [Risk] ISBN 格式不一致或缺漏導致無法寫入資料庫 → Mitigation：合併前一律正規化，無效或缺漏 ISBN 記錄失敗但不中斷整批
 - [Risk] 誤將 Google Books 圖片下載保存，違反其 API 條款 → Mitigation：`cover_image_hosting` 欄位與程式邏輯明確區分來源，僅 NCL 圖片進入下載/上傳流程
 - [Risk] 每日排程在資料尚未公告的日子持續執行，可能產生大量無意義的 log/執行紀錄 → Mitigation：`skipped_not_yet_published` 狀態不計入失敗、log 層級降低（info 而非 error），必要時未來可加監控但 v1 不做
@@ -221,8 +224,6 @@ fetch_book/
 
 ## Open Questions
 
-- NCL CSV 是否實際包含封面圖片欄位／網址：待第一次下載實際 CSV 後確認。若沒有，S3 儲存路徑在 v1 實務上不會被使用，但架構決策不受影響。
-- NCL CSV 網址中的年月格式（西元或民國年）：待第一次實際下載時確認，記錄於 `books/sources/ncl.py` 的實作註記。
 - Google Books API 實際配額數字與費用門檻：待申請金鑰後確認（不影響目前的架構與 tasks 拆分）。
 - S3 + CloudFront（含 OAC）基礎設施的實際佈建（bucket 政策、CloudFront 設定）：屬於部署前置工作，非本次程式碼 tasks 範圍，待實作 NCL 圖片上傳功能前另行處理。
 - 正式雲端資料庫（AWS RDS）與 Redis（ElastiCache）的部署時機與方式：留待未來的部署 change，v1 僅本機 Docker。
