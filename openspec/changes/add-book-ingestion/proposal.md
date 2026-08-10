@@ -4,16 +4,19 @@
 
 ## What Changes
 
-- 使用 Python 建立書籍資料匯入程式（以官方開放資料下載與官方 API 呼叫為主，不做傳統網頁爬蟲）。
+- 使用 Python／Django 建立書籍資料匯入程式（以官方開放資料下載與官方 API 呼叫為主，不做傳統網頁爬蟲）。
 - v1 資料來源與角色：
   - **國家圖書館（NCL）開放資料**（主要資料集）— 「臺灣出版新書預告書訊」月度 CSV（`https://isbn.ncl.edu.tw/NEW_ISBNNet/opendata/[年月]_isbn.csv`），含分類號、建議上架分類等欄位，作為每次執行的書籍母集合
   - **Google Books API**（補充來源，僅作 enrichment）— 針對 NCL 資料中每筆 ISBN 查詢，僅用來補齊 NCL 缺漏的封面圖片與分類標籤；不對 Google Books 做主題搜尋或獨立收錄書籍
-- **資料以正規化的 PostgreSQL 資料庫持久保存**，作為累積式的書籍總目錄：
-  - 每次執行以當月 NCL 資料為輸入，依 ISBN 將書籍資料 upsert 進資料庫（既有 ISBN 更新、新 ISBN 新增），**不清空既有資料**——資料庫會隨每月執行持續累積成完整書目
+- **資料以正規化的 PostgreSQL 資料庫持久保存**（透過 Django ORM 定義與遷移），作為累積式的書籍總目錄：
+  - 每次執行以當月 NCL 資料為輸入，依 ISBN 將書籍資料 upsert 進資料庫（既有 ISBN 更新、新 ISBN 新增），**不清空既有資料**——資料庫會隨每次執行持續累積成完整書目
   - 每次執行記錄為一筆「匯入批次」（月份、執行時間、成功/失敗統計），可追蹤每批資料的來源與結果
   - 已具備非空封面/分類 enrichment 資料的 ISBN，重複執行時 **不再重新查詢 Google Books**（節省配額、確保冪等）
-  - 資料庫存取層採用 SQLAlchemy（ORM）+ Alembic（migration 工具）
-  - v1 資料庫執行環境為**本機 Docker PostgreSQL**；正式雲端部署（如 AWS RDS）留待未來的部署 change 處理
+- **執行方式改為排程自動化**：
+  - 以 **Celery + Celery Beat** 每天固定時間自動觸發一次匯入，目標永遠是「執行當下的年月」；若當月 NCL 資料尚未公告（下載回應 404），視為正常情況、不計入失敗，等資料實際公告後，後續某天的排程會自然抓到並 upsert 進資料庫
+  - 保留**手動觸發**的管理指令（Django management command），供補跑/backfill 特定月份使用；管理指令與 Celery 排程任務呼叫同一份匯入邏輯，不重複實作
+  - Celery task 對「當月尚未公告（404）」與「非預期錯誤（如資料庫連線中斷）」區分處理：前者不重試、不算失敗；後者才觸發 Celery 的 task 層級重試（上限 3 次、指數退避），重試仍失敗則整批標記為失敗，記錄於匯入批次紀錄中供事後查詢（目前無告警/通知整合）
+  - Celery broker 使用 **Redis**（v1 於本機獨立容器運行，不與其他專案共用）
 - 書籍資料以「書籍分類」方式呈現（可查詢）；兩個來源各自的分類體系不同（NCL 為中文分類號/建議上架分類，Google Books 為英文自由標籤），v1 不強求統一為單一分類體系，各自依原生分類保存與呈現。
 - 同一 ISBN 若在兩個來源都有資料，以 **ISBN** 作為合併依據（注意：ISBN 識別的是特定版本/載體，同書不同裝訂或電子書版本視為不同紀錄，不強制合併）。
 - 書籍資料 SHALL 嘗試取得**封面圖片**；查無封面時仍寫入該筆紀錄，圖片欄位為 null，不因缺封面排除該書或中斷批次。
@@ -28,15 +31,16 @@
   - 上述排除的來源除非未來取得書面授權或官方合作管道並重新完成法遵評估，否則不納入
 
 **v1 範例輸入/輸出**（示意，非最終 schema）：
-- 輸入：`--month 2026-07`（欲處理的年月）
-- 輸出：該月 NCL 新書已 upsert 進資料庫；每筆已嘗試以 ISBN 查詢 Google Books 補齊封面/分類；主控台印出該次執行摘要（成功/失敗筆數、enrichment 筆數）
+- 觸發：每日排程自動執行（目標為當月），或手動執行 `manage.py ingest_books --month 2026-07` 補跑
+- 輸出：該月 NCL 新書已 upsert 進資料庫；每筆已嘗試以 ISBN 查詢 Google Books 補齊封面/分類；執行結果記錄於匯入批次紀錄
 
-**預期資料量**：以 NCL 月度新書公告的量級估算，單月約數百至數千筆書目（實際數字待第一次執行後確認）；資料庫會隨每月執行持續累積。
+**預期資料量**：以 NCL 月度新書公告的量級估算，單月約數百至數千筆書目（實際數字待第一次執行後確認）；資料庫會隨每次執行持續累積。
 
 **成功衡量**：
 - NCL 該月資料中，所有具有效 ISBN 的紀錄皆存在於資料庫中（新增或更新）
 - 單筆資料處理失敗（無論是 NCL 列解析失敗或 Google Books 查詢失敗）不影響其他有效資料的寫入
 - 重複執行同一月份為冪等操作：不產生重複紀錄，且不重複呼叫已 enrichment 過的 Google Books 查詢
+- 當月資料尚未公告時，排程執行不產生誤報的失敗紀錄
 - 資料庫 schema 符合設計的正規化結構（見 design.md）
 - Google Books enrichment 的覆蓋率（補到封面/分類的比例）**不是**本次成功的必要條件——資料來源本身未必每筆都有對應資料
 
@@ -44,25 +48,26 @@
 - App 前端（含技術選型，如 React Native）— 另開 change 處理
 - AI 問答/推薦功能 — 另開 change 處理
 - Google Books 圖片下載存檔（法遵限制，見上）
-- 對外提供查詢 API/HTTP 服務（v1 資料庫本身可查詢，但不提供對外服務層）
+- **對外提供查詢 API/HTTP 服務**（含 Django REST Framework）— 資料庫本身可查詢，但不提供對外服務層；留待未來的 `add-book-api` change 處理
 - 動態設定/切換資料來源（v1 來源寫死於程式碼，非使用者可設定項目）
-- 正式雲端資料庫部署（如 AWS RDS、VPC/安全群組設定）— v1 僅本機 Docker，屬於未來部署 change 的範圍
+- 正式雲端資料庫/Redis 部署（如 AWS RDS、ElastiCache）— v1 僅本機 Docker，屬於未來部署 change 的範圍
 - 作者/分類的模糊比對去重（v1 僅精確字串比對，不處理同名異寫、翻譯差異等）
 - 已完成 enrichment 資料的重新驗證/更新機制（v1 一經補值不重查，若需要強制刷新屬於未來需求）
+- 失敗告警/通知機制（v1 失敗僅記錄於匯入批次紀錄與 log，不主動通知）
 
 ## Capabilities
 
 ### New Capabilities
-- `book-ingestion`：依據前述原則，以 NCL 開放資料為主要資料集，Google Books API 僅作 ISBN 層級的封面/分類補充，將書籍資料以正規化結構持久保存於 PostgreSQL 資料庫，並依分類方式可查詢。
+- `book-ingestion`：依據前述原則，以 NCL 開放資料為主要資料集，Google Books API 僅作 ISBN 層級的封面/分類補充，透過每日排程（Celery）或手動觸發，將書籍資料以正規化結構持久保存於 PostgreSQL 資料庫，並依分類方式可查詢。
 
 ### Modified Capabilities
 （無，本專案第一個 capability）
 
 ## Impact
 
-- 新增 Python 專案結構，目前專案內無既有程式碼會受影響。
-- 新增本機 PostgreSQL（Docker）、SQLAlchemy、Alembic、資料庫驅動（psycopg）等依賴。
+- 新增 Python/Django 專案結構，目前專案內無既有程式碼會受影響。
+- 新增本機 PostgreSQL、Redis（Docker）、Django、Celery、Celery Beat 等依賴。
 - 國家圖書館來源為官方開放資料 CSV 下載，非網頁爬取，無服務條款疑慮。
 - Google Books API 需申請 API 金鑰並留意配額限制、快取與轉散布限制（細節見 design.md）。
 - 博客來、讀冊、誠品三個來源明確排除於 v1，相關程式碼/依賴不需要處理這三者的網頁爬取邏輯。
-- 若未來需要下載/保存圖片檔（例如 Google Books 來源）或部署正式雲端資料庫，須先取得對應授權/評估，屬於另外的 change 範圍。
+- 若未來需要下載/保存圖片檔（例如 Google Books 來源）、對外提供 API（DRF）、或部署正式雲端資料庫/Redis，須先取得對應授權/評估，屬於另外的 change 範圍。
