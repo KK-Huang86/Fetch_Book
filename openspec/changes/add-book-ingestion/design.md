@@ -74,7 +74,7 @@ Category
   id            AutoField PK
   source        CharField, choices=["ncl", "google_books"]
   type          CharField, choices=["classification_number", "shelf_category", "subject_tag"]
-  code          CharField, null=True
+  code          CharField, blank=True, default=""   -- NOT NULL; "no code" is "", not NULL
   label         CharField
   unique_together = ("source", "type", "code", "label")
 
@@ -106,12 +106,14 @@ IngestionFailure
 ```
 
 - `Book.isbn13` 是累積式 upsert 的 key。
+- `Category.code` 刻意不用 `null=True`：PostgreSQL 視多個 `NULL` 彼此不相等，若 code 允許 NULL，`(source, type, code, label)` 的 unique 約束無法擋下重複的「無代碼」分類（例如 Google Books 的 subject tag 都沒有 code），會破壞 upsert 冪等性。統一以空字串 `""` 代表「無代碼」。
 - `IngestionRun.status` 新增 `skipped_not_yet_published`，對應「當月 NCL 資料尚未公告」這個非失敗情況（見決策 10）。
 - `IngestionRun.trigger_type` 記錄是排程還是手動觸發，滿足 spec 的「手動觸發匯入」需求。
 - 以 Django migrations（`manage.py makemigrations`/`migrate`）管理上述 schema，取代原先評估過的 Alembic 方案。
 
 ### 4. ISBN 正規化與邊界規則
 - 比對前一律移除連字號、空白，正規化為 ISBN-13（ISBN-10 依標準演算法轉換），寫入 `isbn13`／`isbn10` 兩欄。
+- 13 碼數字且 checksum 正確，仍須以 `978` 或 `979` 開頭才視為 ISBN；一般 EAN-13（例如商品條碼）checksum 也可能算對，但不是書籍 ISBN，MUST 回傳無效。
 - Checksum 無效：該筆資料不寫入 `Book`（無法作為 upsert key），記錄一筆 `IngestionFailure`（`stage=ncl_parse`）。
 - NCL 單列包含多個 ISBN（例如套書）：拆解為多筆獨立紀錄。
 - 完全無 ISBN 的 NCL 紀錄：不寫入資料庫，記錄一筆 `IngestionFailure`。

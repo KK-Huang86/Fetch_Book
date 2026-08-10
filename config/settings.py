@@ -26,7 +26,16 @@ load_dotenv(BASE_DIR / ".env")
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-secret-key-change-me")
+# No fallback: a checked-in placeholder secret is a real risk if this ever
+# runs without .env loaded. Fail loudly instead.
+try:
+    SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
+except KeyError as exc:
+    raise RuntimeError(
+        "DJANGO_SECRET_KEY is not set. Copy .env.example to .env and "
+        "generate one: python -c \"from django.core.management.utils "
+        "import get_random_secret_key; print(get_random_secret_key())\""
+    ) from exc
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
@@ -121,6 +130,17 @@ USE_TZ = True
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6380/0")
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+
+# fetch_book: external service configuration.
+# Read here (not scattered os.environ calls) so all ingestion code goes
+# through django.conf.settings, per PR #9 review.
+GOOGLE_BOOKS_API_KEY = os.environ.get("GOOGLE_BOOKS_API_KEY", "")
+AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", "")
+AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+AWS_REGION = os.environ.get("AWS_REGION", "")
+S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "")
+CLOUDFRONT_DOMAIN = os.environ.get("CLOUDFRONT_DOMAIN", "")
 
 
 # Static files (CSS, JavaScript, Images)

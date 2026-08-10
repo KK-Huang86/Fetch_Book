@@ -4,19 +4,19 @@
 
 ## 0. Django + Celery + Redis 專案骨架（prefactor，非 TDD 循環）
 
-- [ ] 0.1 建立 Django 專案（`config/`）與 `books` app，設定 `DATABASE_URL` 讀取（`.env`）
-- [ ] 0.2 更新 `requirements.txt`：移除 SQLAlchemy/Alembic，加入 Django、celery、redis、django-celery-beat（或等效排程套件）、httpx、boto3、python-dotenv、pytest、pytest-django、respx
-- [ ] 0.3 `docker-compose.yml` 新增 Redis service（host port 6380，避免與其他專案的 Redis 容器衝突），保留既有 PostgreSQL service
-- [ ] 0.4 設定 Google Books API 金鑰、S3 存取憑證、Celery broker URL 的讀取方式（`.env`），確認 `.gitignore` 涵蓋範圍
-- [ ] 0.5 以 Django models 定義決策 3 的資料表（`Publisher`/`Author`/`Book`/`BookAuthor`/`Category`/`BookCategory`/`IngestionRun`/`IngestionFailure`）
-- [ ] 0.6 產生並套用初始 Django migration，於本機 Docker Postgres 驗證建表成功
-- [ ] 0.7 設定 `config/celery.py`（Celery app 初始化、Celery Beat 排程定義，先接一個空的 placeholder task）
+- [x] 0.1 建立 Django 專案（`config/`）與 `books` app，設定 `DATABASE_URL` 讀取（`.env`）
+- [x] 0.2 更新 `requirements.txt`：移除 SQLAlchemy/Alembic，加入 Django、celery、redis、django-celery-beat（或等效排程套件）、httpx、boto3、python-dotenv、pytest、pytest-django、respx
+- [x] 0.3 `docker-compose.yml` 新增 Redis service（host port 6380，避免與其他專案的 Redis 容器衝突），保留既有 PostgreSQL service
+- [x] 0.4 設定 Google Books API 金鑰、S3 存取憑證、Celery broker URL 的讀取方式（`.env`），確認 `.gitignore` 涵蓋範圍；並在 `config/settings.py` 以具名 Django settings 暴露（`GOOGLE_BOOKS_API_KEY`/`AWS_*`/`S3_BUCKET_NAME`/`CLOUDFRONT_DOMAIN`/`CELERY_BROKER_URL`），不留給後續程式各自散呼叫 `os.environ`
+- [x] 0.5 以 Django models 定義決策 3 的資料表（`Publisher`/`Author`/`Book`/`BookAuthor`/`Category`/`BookCategory`/`IngestionRun`/`IngestionFailure`）；`Category.code` 用 `blank=True, default=""`（非 `null=True`），避免 unique 約束在 NULL 上失效
+- [x] 0.6 產生並套用初始 Django migration，於本機 Docker Postgres 驗證建表成功
+- [x] 0.7 設定 `config/celery.py`（Celery app 初始化）與 Celery Beat 排程：以 `django-celery-beat` 的 `DatabaseScheduler` + 資料遷移建立 `PeriodicTask`/`CrontabSchedule`（`daily-ingestion-placeholder`，`0 3 * * * Asia/Taipei`，指向 placeholder task `books.tasks.ping`），已驗證 worker 可發現 task、`ModelEntry` 可正確解析排程
 
 ## 1. Seam 1 — ISBN 正規化（`books/services/schema.py`）
 
-- [ ] 1.1 **(red)** 撰寫 `normalize_isbn` 測試：有效 ISBN-13、有效 ISBN-10（含轉換為 13 碼）、含連字號/空白、checksum 無效、空字串/None、非數字字元等邊界案例；確認測試先為紅燈
-- [ ] 1.2 **(green)** 實作 `normalize_isbn`，讓 1.1 全數通過
-- [ ] 1.3 依 CLAUDE.md 規則檢查：測試是否已涵蓋邊界案例，未涵蓋則回頭補（回到 1.1）
+- [x] 1.1 **(red)** 撰寫 `normalize_isbn` 測試：有效 ISBN-13、有效 ISBN-10（含轉換為 13 碼）、含連字號/空白、checksum 無效、空字串/None、非數字字元、13 碼但非 978/979 開頭的一般 EAN-13 等邊界案例；確認測試先為紅燈
+- [x] 1.2 **(green)** 實作 `normalize_isbn`，讓 1.1 全數通過
+- [x] 1.3 依 CLAUDE.md 規則檢查：依 code review 補上「978/979 開頭」邊界案例（原實作會誤收一般 EAN-13），先寫紅燈測試再修正實作
 
 ## 2. Seam 2 — NCL CSV 解析（`books/sources/ncl.py` 的純解析函式）
 

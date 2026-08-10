@@ -36,7 +36,11 @@ def normalize_isbn(raw: str | None) -> str | None:
             return None
         return _isbn10_to_isbn13(cleaned)
 
-    if len(cleaned) == 13 and cleaned.isdigit():
+    if (
+        len(cleaned) == 13
+        and cleaned.isdigit()
+        and cleaned.startswith(("978", "979"))
+    ):
         if not _isbn13_check_digit_valid(cleaned):
             return None
         return cleaned

@@ -28,7 +28,11 @@ class Category(models.Model):
 
     source = models.CharField(max_length=32, choices=Source.choices)
     type = models.CharField(max_length=32, choices=Type.choices)
-    code = models.CharField(max_length=64, null=True, blank=True)
+    # No null=True: PostgreSQL treats NULL != NULL, which would let the
+    # (source, type, code, label) unique constraint below admit duplicate
+    # "no code" categories (e.g. Google Books subject tags). "" is the
+    # canonical "no code" value instead.
+    code = models.CharField(max_length=64, blank=True, default="")
     label = models.CharField(max_length=255)
 
     class Meta:
@@ -121,8 +125,12 @@ class IngestionRun(models.Model):
 
 class IngestionFailure(models.Model):
     class Stage(models.TextChoices):
+        NCL_DOWNLOAD = "ncl_download", "NCL download"
         NCL_PARSE = "ncl_parse", "NCL parse"
         GOOGLE_LOOKUP = "google_lookup", "Google Books lookup"
+        BOOK_UPSERT = "book_upsert", "Book upsert"
+        COVER_STORAGE = "cover_storage", "Cover image storage"
+        INGESTION = "ingestion", "Ingestion run (unclassified)"
 
     run = models.ForeignKey(
         IngestionRun, on_delete=models.CASCADE, related_name="failures"

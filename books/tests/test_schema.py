@@ -34,3 +34,7 @@ class TestNormalizeIsbn:
     def test_wrong_length_returns_none(self):
         assert normalize_isbn("12345") is None
         assert normalize_isbn("97895712345678901") is None
+
+    def test_valid_ean13_with_non_book_prefix_returns_none(self):
+        # 400... is a valid EAN-13 checksum but not a 978/979 ISBN prefix.
+        assert normalize_isbn("4006381333931") is None
