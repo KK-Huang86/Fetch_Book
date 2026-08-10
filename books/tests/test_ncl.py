@@ -89,6 +89,19 @@ class TestParseNclCsv:
         assert failures[0].isbn == "9786269935469"
         assert failures[0].error_code == "invalid_isbn"
 
+    def test_legacy_header_alias_常用分類_maps_to_shelf_category(self):
+        # 2025-01-and-earlier CSVs use 常用分類 where 2025-07+ uses 建議上架分類
+        # (design.md decision 8). Backfilling an old month must not silently
+        # drop this field.
+        records, failures = parse_ncl_csv(_read("ncl_legacy_header.csv"))
+
+        assert failures == []
+        assert len(records) == 1
+        record = records[0]
+        assert record.isbn13 == "9789869127578"
+        assert CategoryInput(type="shelf_category", code="", label="醫學家政") in record.categories
+        assert CategoryInput(type="subject_tag", code="", label="應用科學") in record.categories
+
     def test_empty_file_returns_no_records_and_no_failures(self):
         records, failures = parse_ncl_csv(_read("ncl_empty.csv"))
 
@@ -104,3 +117,12 @@ class TestParseNclCsv:
         records, failures = parse_ncl_csv(_read("ncl_missing_isbn.csv"))
         assert isinstance(records, list)
         assert isinstance(failures, list)
+
+    def test_bad_rows_interleaved_with_good_rows_do_not_break_the_loop(self):
+        # Good/missing-ISBN/good/invalid-ISBN, in that order. Proves the
+        # second good row is still parsed after a failure in the middle of
+        # the batch, not just a failure at the very end.
+        records, failures = parse_ncl_csv(_read("ncl_mixed_batch.csv"))
+
+        assert [r.isbn13 for r in records] == ["9786269935468", "9786264237307"]
+        assert [f.error_code for f in failures] == ["missing_isbn", "invalid_isbn"]
