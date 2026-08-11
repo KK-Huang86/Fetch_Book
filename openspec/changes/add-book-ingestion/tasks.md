@@ -18,13 +18,15 @@
 - [x] 1.2 **(green)** 實作 `normalize_isbn`，讓 1.1 全數通過
 - [x] 1.3 依 CLAUDE.md 規則檢查：依 code review 補上「978/979 開頭」邊界案例（原實作會誤收一般 EAN-13），先寫紅燈測試再修正實作
 
-## 2. Seam 2 — NCL CSV 解析（`books/sources/ncl.py` 的純解析函式）
+## 2. Seam 2 — NCL CSV 下載與解析（`books/sources/ncl.py`）
 
-- [ ] 2.1 手造最小 CSV 測試樣本（正常列、多 ISBN 列、缺 ISBN 列、缺分類欄位、空檔案），存至 `books/tests/fixtures/`
-- [ ] 2.2 **(red)** 針對 CSV 解析函式（輸入 CSV bytes、輸出中介資料結構，不含網路下載）撰寫測試，涵蓋 2.1 的各種樣本；確認測試先為紅燈
-- [ ] 2.3 **(green)** 實作解析邏輯（含編碼/BOM/分隔符號偵測、欄位對應、單列多 ISBN 拆解），讓 2.2 全數通過
-- [ ] 2.4 下載邏輯（依月份組網址、HTTP 下載、404/逾時/中斷處理）屬於 I/O 邊界，不納入本 seam 單元測試，改由 7.x/8.x 整合測試與人工 smoke test 涵蓋
-- [ ] 2.5 第一次實際下載月度 CSV 後，確認真實年月格式、編碼、分隔符號，回頭補齊/替換 2.1 的 fixture 與 2.2 的測試案例
+> 已實際請求 5 個月份（2024-12、2025-01、2025-07、2025-08 成功；2023-12 回應 404，確認回溯邊界）NCL CSV 確認真實契約，記錄於 design.md 決策 8：西元年月、UTF-8 with BOM、標準逗號分隔 CSV、27 欄（以欄位名稱對應，非固定順序；`建議上架分類`/`常用分類` 為同一語意欄位的新舊名稱，已做 fallback）、無封面欄位、每列固定 1 個 ISBN（無多 ISBN 列，故拿掉原「單列多 ISBN 拆解」案例）。
+
+- [x] 2.1 依實測欄位結構手造最小 CSV 測試樣本（正常列、缺 ISBN 列、ISBN 格式無效列、缺分類號欄位列、空檔案、舊欄位版本、好壞列交錯批次），存至 `books/tests/fixtures/`（4 個月份真實資料衍生的正常列，涵蓋單一作者+角色字尾、句點黏連角色字尾、逗號多作者+引號欄位、分號+逗號混合作者群組、2025-01 舊欄位「常用分類」等真實樣態）
+- [x] 2.2 **(red)** 針對 CSV 解析函式（輸入 CSV bytes、輸出中介資料結構，不含網路下載）撰寫測試，涵蓋 2.1 的各種樣本；確認測試先為紅燈（`ModuleNotFoundError: books.sources.ncl`）
+- [x] 2.3 **(green)** 實作解析邏輯（`utf-8-sig` 解碼、`csv.DictReader` 依欄位名稱對應，含新舊欄位別名 fallback；另於 `books/services/schema.py` 新增 `split_authors`——依真實資料切分並去除角色字尾/著/編著/譯/主編等，見 `books/tests/test_schema.py::TestSplitAuthors`——與 `CategoryInput`/`ParsedBookRecord`/`ParseFailure` 中介資料結構），讓 2.2 全數通過
+- [x] 2.4 **(red→green)** 實作下載 client（`build_ncl_csv_url`/`download_ncl_csv`，依月份組網址、`httpx` GET、連線 5 秒／讀取 30 秒逾時、404/逾時/網路錯誤對應結構化例外 `NclNotFoundError`/`NclDownloadTimeoutError`/`NclNetworkError`/`NclDownloadError`），單元測試以 `respx` mock HTTP、不依賴即時網路請求；404 該如何解讀（排程視為正常/手動視為錯誤）留給 #5/#8 決定，不在本 seam 處理
+- [x] 2.5 補強「壞列不中斷整批解析」測試：同一份 CSV 內好壞列交錯（好→缺ISBN→好→無效ISBN），驗證中間壞列不中止迴圈、後續正常列仍正確解析
 
 ## 3. Seam 3 — Google Books 查詢（`books/sources/google_books.py`）
 
