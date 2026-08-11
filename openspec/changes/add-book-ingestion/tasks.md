@@ -33,7 +33,7 @@
 - [x] 3.1 建立 mock HTTP 回應 fixture：成功（含多個 `industryIdentifiers`）、查無資料、429、5xx、timeout（`books/tests/test_google_books.py` 內以 respx 建構，非另存檔案，因為是 API JSON 回應而非下載樣本）
 - [x] 3.2 **(red)** 撰寫查詢函式測試（HTTP 以 mock 取代），涵蓋 3.1 各情境、`industryIdentifiers` 優先序、逾時與重試（僅 429/502/503/504/timeout 重試、其他 4xx 與 500 不重試、最多 3 次、尊重 `Retry-After`、總等待上限 30 秒）；確認測試先為紅燈（`ModuleNotFoundError: books.sources.google_books`）
 - [x] 3.3 **(green)** 實作 `query_google_books_by_isbn`（`books/sources/google_books.py`）：逾時（連線 5s／讀取 10s）、重試與退避＋jitter＋`Retry-After` 優先、總等待時間以剩餘預算裁切；回傳 `GoogleBooksResult`（`found`/`not_found`/`failed`，見 `books/services/schema.py`），不拋出未處理例外，讓 3.2 全數通過
-
+- [x] 3.4 依 CLAUDE.md 規則檢查（PR review 3 項修正，先紅燈後修正）：(a) 首版只解析、未實際比對回傳項目的 ISBN 是否等於查詢的 ISBN 就採用其資料，改為逐筆比對相符才採用，全不符時回傳 `not_found`；(b) 逾時/連線錯誤的 `error_message` 直接 `str()` httpx 例外，可能內嵌帶金鑰的 request URL，改為只記錄例外類型名稱；(c) 200 回應為非法 JSON 或欄位型別錯誤時會拋出未處理例外，改為防禦性解析＋外層 try/except，回傳 `status='failed'`；順便將 `GoogleBooksResult.status` 改為 `Literal` 型別、`categories` 增加 strip/去重/濾除非字串與空值
 ## 4. Seam 4 — 合併/欄位覆蓋規則（`books/services/merge.py`）
 
 - [ ] 4.1 **(red)** 撰寫測試：書目欄位（title/publisher/authors）以 NCL 覆蓋、categories 聯集累加不刪除既有、cover_image 既有非空值不覆蓋、URL 升級 https 等 design.md 決策 5 的規則；確認測試先為紅燈

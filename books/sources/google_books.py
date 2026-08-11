@@ -36,11 +36,22 @@ def _backoff_delay(attempt: int, retry_after: float | None) -> float:
     return _BASE_DELAY * (2**attempt) + jitter
 
 
-def _extract_isbn13(industry_identifiers: list[dict] | None) -> str | None:
-    """design.md decision 4: prefer ISBN_13, else convert ISBN_10."""
+def _extract_isbn13(industry_identifiers: object) -> str | None:
+    """design.md decision 4: prefer ISBN_13, else convert ISBN_10.
+
+    Defensive against malformed input (Google's response is an external
+    boundary, see tasks.md 3.x "不拋出未處理例外"): a non-list, or entries
+    that aren't dicts, are treated as "no usable identifier" rather than
+    raising.
+    """
+    if not isinstance(industry_identifiers, list):
+        return None
+
     isbn13 = None
     isbn10 = None
-    for identifier in industry_identifiers or []:
+    for identifier in industry_identifiers:
+        if not isinstance(identifier, dict):
+            continue
         if identifier.get("type") == "ISBN_13":
             isbn13 = identifier.get("identifier")
         elif identifier.get("type") == "ISBN_10":
@@ -52,37 +63,56 @@ def _extract_isbn13(industry_identifiers: list[dict] | None) -> str | None:
     return None
 
 
-def _extract_cover_image_url(image_links: dict | None) -> str | None:
-    if not image_links:
+def _extract_cover_image_url(image_links: object) -> str | None:
+    if not isinstance(image_links, dict):
         return None
     return image_links.get("thumbnail") or image_links.get("smallThumbnail")
 
 
-def _extract_categories(categories: list[str] | None) -> list[CategoryInput]:
-    return [
-        CategoryInput(type="subject_tag", code="", label=label)
-        for label in (categories or [])
-    ]
+def _extract_categories(categories: object) -> list[CategoryInput]:
+    if not isinstance(categories, list):
+        return []
+    labels = dict.fromkeys(
+        label.strip()
+        for label in categories
+        if isinstance(label, str) and label.strip()
+    )
+    return [CategoryInput(type="subject_tag", code="", label=label) for label in labels]
+
+
+class _MalformedGoogleBooksResponse(Exception):
+    """Raised for a 200 response whose shape can't be interpreted at all
+    (not: a per-item quirk, which is handled defensively inline instead)."""
 
 
 def _parse_found_response(payload: dict, queried_isbn13: str) -> GoogleBooksResult:
-    items = payload.get("items") or []
-    if not items:
+    items = payload.get("items")
+    if items is None:
         return GoogleBooksResult(status="not_found", isbn13=queried_isbn13)
+    if not isinstance(items, list):
+        raise _MalformedGoogleBooksResponse("'items' is not a list")
 
-    volume_info = items[0].get("volumeInfo", {})
-    # _extract_isbn13 validates decision 4's priority rule but the join
-    # key back to our Book row stays the ISBN we searched by (design.md
-    # decision 6's idempotency contract keys off our own normalized isbn13,
-    # not whatever Google echoes back).
-    _extract_isbn13(volume_info.get("industryIdentifiers"))
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        volume_info = item.get("volumeInfo")
+        if not isinstance(volume_info, dict):
+            continue
+        # `q=isbn:X` is not guaranteed to return only exact matches as
+        # items[0] — confirm this item's own ISBN (decision 4 priority:
+        # ISBN_13 first, else ISBN_10 converted) actually is the one we
+        # queried before trusting its cover/categories for that ISBN.
+        if _extract_isbn13(volume_info.get("industryIdentifiers")) != queried_isbn13:
+            continue
 
-    return GoogleBooksResult(
-        status="found",
-        isbn13=queried_isbn13,
-        cover_image_url=_extract_cover_image_url(volume_info.get("imageLinks")),
-        categories=_extract_categories(volume_info.get("categories")),
-    )
+        return GoogleBooksResult(
+            status="found",
+            isbn13=queried_isbn13,
+            cover_image_url=_extract_cover_image_url(volume_info.get("imageLinks")),
+            categories=_extract_categories(volume_info.get("categories")),
+        )
+
+    return GoogleBooksResult(status="not_found", isbn13=queried_isbn13)
 
 
 def query_google_books_by_isbn(
@@ -103,16 +133,37 @@ def query_google_books_by_isbn(
         try:
             response = client.get(GOOGLE_BOOKS_BASE_URL, params=params, timeout=_TIMEOUT)
         except httpx.TimeoutException as exc:
-            error_message = f"timeout: {exc}"
+            # design.md decision 12: IngestionFailure.message must never
+            # contain the API key / a fully-keyed request URL. httpx
+            # exception __str__ can embed the request (and its `key=`
+            # query param), so only the exception *type* is safe to keep.
+            error_message = f"timeout: {type(exc).__name__}"
         except httpx.RequestError as exc:
             # Only timeout/429/5xx are retryable (design.md decision 9);
             # any other network error fails fast.
             return GoogleBooksResult(
-                status="failed", isbn13=isbn13, error_message=f"network error: {exc}"
+                status="failed",
+                isbn13=isbn13,
+                error_message=f"network error: {type(exc).__name__}",
             )
         else:
             if response.status_code == 200:
-                return _parse_found_response(response.json(), isbn13)
+                try:
+                    payload = response.json()
+                    if not isinstance(payload, dict):
+                        raise _MalformedGoogleBooksResponse("response body is not a JSON object")
+                    return _parse_found_response(payload, isbn13)
+                except (
+                    ValueError,  # json.JSONDecodeError subclasses ValueError
+                    TypeError,
+                    AttributeError,
+                    _MalformedGoogleBooksResponse,
+                ):
+                    return GoogleBooksResult(
+                        status="failed",
+                        isbn13=isbn13,
+                        error_message="invalid Google Books response",
+                    )
             if response.status_code not in _RETRYABLE_STATUS_CODES:
                 return GoogleBooksResult(
                     status="failed",

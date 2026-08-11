@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -49,7 +50,7 @@ class GoogleBooksResult:
     `error_message` is only meaningful when status == "failed".
     """
 
-    status: str
+    status: Literal["found", "not_found", "failed"]
     isbn13: str
     cover_image_url: str | None = None
     categories: list[CategoryInput] = field(default_factory=list)
