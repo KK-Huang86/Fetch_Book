@@ -36,17 +36,17 @@
 - [x] 3.4 依 CLAUDE.md 規則檢查（PR review 3 項修正，先紅燈後修正）：(a) 首版只解析、未實際比對回傳項目的 ISBN 是否等於查詢的 ISBN 就採用其資料，改為逐筆比對相符才採用，全不符時回傳 `not_found`；(b) 逾時/連線錯誤的 `error_message` 直接 `str()` httpx 例外，可能內嵌帶金鑰的 request URL，改為只記錄例外類型名稱；(c) 200 回應為非法 JSON 或欄位型別錯誤時會拋出未處理例外，改為防禦性解析＋外層 try/except，回傳 `status='failed'`；順便將 `GoogleBooksResult.status` 改為 `Literal` 型別、`categories` 增加 strip/去重/濾除非字串與空值
 ## 4. Seam 4 — 合併/欄位覆蓋規則（`books/services/merge.py`）
 
-- [ ] 4.1 **(red)** 撰寫測試：書目欄位（title/publisher/authors）以 NCL 覆蓋、categories 聯集累加不刪除既有、cover_image 既有非空值不覆蓋、URL 升級 https 等 design.md 決策 5 的規則；確認測試先為紅燈
-- [ ] 4.2 **(green)** 實作 `merge.py`，讓 4.1 全數通過
+- [x] 4.1 **(red)** 撰寫測試：書目欄位（title/publisher/authors）以 NCL 覆蓋、categories 聯集累加不刪除既有、cover_image 既有非空值不覆蓋、URL 升級 https 等 design.md 決策 5 的規則；確認測試先為紅燈（`ModuleNotFoundError: books.services.merge`）
+- [x] 4.2 **(green)** 實作 `merge.py`（`merge_book_fields`，新增 `ResolvedCategory`/`ExistingBookState`/`MergedBookFields` 型別——`CategoryInput` 本身不含來源，合併層才需要區分 NCL/Google Books 來源以對應 `Category` 的 unique key），讓 4.1 全數通過
 
 ## 5. Seam 5 — Django ORM Upsert Repository（`books/services/ingest.py` 內的寫入邏輯）
 
-- [ ] 5.1 **(red)**（使用 `pytest-django` 的資料庫測試，transaction rollback 隔離）撰寫測試：首次新增新書籍、同 ISBN 重複執行更新既有紀錄（非新增重複列）、categories 累加、authors 覆蓋重建、`cover_image` 既有值保留規則；確認測試先為紅燈
-- [ ] 5.2 **(green)** 實作 upsert 邏輯（`select_for_update` + `transaction.atomic()` 包裹單筆寫入、失敗 rollback 該筆不影響同批其餘），讓 5.1 全數通過
-- [ ] 5.3 **(red)** 撰寫測試：enrichment 冪等性判斷（已有非空封面/分類的 ISBN 應跳過 Google Books；尚未補齊的則應查詢）；確認測試先為紅燈
-- [ ] 5.4 **(green)** 實作冪等性判斷邏輯，讓 5.3 全數通過
-- [ ] 5.5 **(red)** 撰寫測試：`IngestionRun` 建立/更新（狀態、統計欄位、`trigger_type`）、`IngestionFailure` 寫入（含不得包含 API 金鑰/完整帶金鑰網址）；確認測試先為紅燈
-- [ ] 5.6 **(green)** 實作對應寫入邏輯，讓 5.5 全數通過
+- [x] 5.1 **(red)**（使用 `pytest-django` 的資料庫測試，transaction rollback 隔離）撰寫測試：首次新增新書籍、同 ISBN 重複執行更新既有紀錄（非新增重複列）、categories 累加、authors 覆蓋重建、`cover_image` 既有值保留規則、單筆失敗 rollback 不留下部分寫入；確認測試先為紅燈（`ModuleNotFoundError: books.services.ingest`）
+- [x] 5.2 **(green)** 實作 `upsert_book`（`select_for_update` + `transaction.atomic()` 包裹單筆寫入、失敗 rollback 該筆不影響同批其餘；`Publisher`/`Author`/`Category` 皆以 `get_or_create` 建立，`BookAuthor` 先清除重建、`BookCategory` 只新增不刪除），讓 5.1 全數通過
+- [x] 5.3 **(red)** 撰寫測試：enrichment 冪等性判斷（已有非空封面/分類的 ISBN 應跳過 Google Books；尚未補齊的則應查詢；ISBN 尚未存在於資料庫也應查詢；僅 NCL 來源分類不算數，須為 `source=google_books`）；確認測試先為紅燈
+- [x] 5.4 **(green)** 實作 `should_query_google_books`，讓 5.3 全數通過
+- [x] 5.5 **(red)** 撰寫測試：`IngestionRun` 建立（`start_ingestion_run`，狀態/`trigger_type`）與更新（`finish_ingestion_run`，統計欄位、`finished_at`）、`IngestionFailure` 寫入（`record_ingestion_failure`，含訊息含 `key=` 字樣應被拒絕寫入，防禦性守門而非僅依賴上游來源自律）；確認測試先為紅燈
+- [x] 5.6 **(green)** 實作對應寫入邏輯，讓 5.5 全數通過
 
 ## 6. Seam 6 — Management Command（手動觸發，`books/management/commands/ingest_books.py`）
 

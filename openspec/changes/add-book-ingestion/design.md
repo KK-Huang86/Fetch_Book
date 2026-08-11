@@ -125,7 +125,8 @@ IngestionFailure
 - `title`／`publisher`：每次以最新 NCL 資料覆蓋（NCL 為書目權威來源）。
 - `authors`：以最新 NCL 資料覆蓋 `BookAuthor` 關聯（先清除該書既有關聯、依最新資料重建 M2M），維持與 NCL 一致。
 - `categories`：**聯集累加**——新分類透過 `BookCategory` 新增關聯，既有分類不因本次未出現而刪除。
-- `cover_image_url` / `cover_image_hosting`：既有值非空時不覆蓋（見決策 6 的冪等性規則）；既有值為空且本次取得新值時才寫入。
+- `cover_image_url` / `cover_image_hosting`：既有值非空時不覆蓋（見決策 6 的冪等性規則，且不回頭處理既有值，即使既有值是 `http://`）；既有值為空且本次取得新值時才寫入——寫入前若新值為 `http://` 開頭，一律轉換為 `https://`（v1 唯一封面來源 Google Books 的圖片網址常見 `http://`，其 CDN 同網域支援 `https://`，避免未來前端出現 mixed content 問題；NCL 目前無封面欄位，此規則實務上只作用於 Google Books 來源）。
+- `categories` 的「聯集累加」在跨來源合併時需要保留每筆分類的來源（`source`），才能正確對應到 `Category` model 的 `(source, type, code, label)` unique key；`books/services/schema.py::CategoryInput` 本身不含 `source`（由各 adapter 依語境隱含），故合併層（`books/services/merge.py`）另定義帶 `source` 的 `ResolvedCategory` 作為輸出/既有狀態的型別，去重以 `(source, type, code, label)` 為準。
 - `first_seen_month`：僅在首次新增時設定，之後 upsert 不變更。
 - `updated_at`：Django `auto_now=True` 自動更新。
 - 單筆書籍寫入失敗時，該筆的 `atomic()` block rollback 並記錄 `IngestionFailure`，不影響同批其餘書籍。
