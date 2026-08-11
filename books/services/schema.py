@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,26 @@ class ParseFailure:
     isbn: str | None
     error_code: str
     message: str
+
+
+@dataclass(frozen=True)
+class GoogleBooksResult:
+    """Outcome of a single-ISBN Google Books lookup (books/sources/google_books.py).
+
+    Google Books is enrichment-only (design.md decision 1/5): a "found"
+    result supplies cover_image_url/categories for merge to layer on top
+    of NCL data, never title/authors/publisher. `status` is always one of
+    "found"/"not_found"/"failed" — the function never raises for a
+    not-found ISBN or an exhausted-retry request (design.md decision 9 /
+    tasks.md 3.x acceptance criteria: 回傳明確結果，不拋出未處理例外);
+    `error_message` is only meaningful when status == "failed".
+    """
+
+    status: Literal["found", "not_found", "failed"]
+    isbn13: str
+    cover_image_url: str | None = None
+    categories: list[CategoryInput] = field(default_factory=list)
+    error_message: str | None = None
 
 
 def _isbn10_check_digit_valid(digits: str) -> bool:

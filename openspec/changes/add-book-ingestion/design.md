@@ -157,9 +157,12 @@ IngestionFailure
 - 逾時設定：連線 5 秒、讀取 10 秒。
 - 重試條件：僅對逾時、429、502/503/504 重試；4xx（除 429）不重試，直接記錄失敗。
 - 最大重試次數：3 次，採指數退避＋隨機 jitter，總等待時間上限 30 秒。
-- 尊重 `Retry-After` header。
+- 尊重 `Retry-After` header：**v1 僅支援 delta-seconds（數字秒數）格式**，不解析 HTTP-date 格式（例如 `Wed, 21 Oct 2026 07:28:00 GMT`）；遇到無法解析為數字的值時，退回自算的指數退避，不會因此中斷或報錯。
 - 併發限制：v1 以循序（單一併發）呼叫。
 - 此層重試是「單一 Google Books 請求」的重試，與決策 10 的「Celery task 整體」重試是不同層級，兩者不互相取代。
+- **回傳結果比對**：Google Books 以 ISBN 搜尋不保證第一筆 `items` 就是精確匹配，須逐筆比對該筆 `industryIdentifiers`（依上述優先序解析出的 ISBN-13）是否等於查詢的 ISBN，相符才採用其封面/分類；全部不符時視為 `not_found`（而非誤用不相符書籍的資料）。
+- **錯誤訊息不得含 API 金鑰**：HTTP 逾時/連線錯誤的 `GoogleBooksResult.error_message` 僅記錄例外類型名稱（例如 `network error: ConnectError`），不得對 httpx 例外直接 `str()`——exception 字串可能內嵌完整帶金鑰的 request URL，違反本文件決策 12「`IngestionFailure.message` 不得包含 API 金鑰」的要求。
+- **回應內容防禦性解析**：200 回應仍可能是非預期格式（非法 JSON、`items` 非 list、單筆項目缺 `volumeInfo`/型別錯誤等）——視為外部邊界輸入，解析失敗時回傳 `status='failed'`，不拋出未處理例外；單筆項目格式錯誤只跳過該筆，不影響其他項目的比對。
 
 ### 10. 排程與執行方式（Celery + Celery Beat）
 - **Broker**：Redis，v1 於本機獨立 Docker 容器運行（host port 6380，避免與機器上其他專案的 Redis 容器衝突），不與其他專案共用。
