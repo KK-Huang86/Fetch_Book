@@ -1,7 +1,7 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-from django.db import DatabaseError
+from django.db import DatabaseError, IntegrityError
 
 from books.models import Author, Book, BookAuthor, Category
 from books.services.ingest import upsert_book
@@ -97,6 +97,62 @@ class TestRepeatedUpsertBySameIsbn:
         book = upsert_book(_ncl_record(), month="2025-09", google_result=second_google_result)
 
         assert book.cover_image_url == "https://books.google.com/first.jpg"
+
+
+@pytest.mark.django_db
+class TestConcurrentInsertRace:
+    # select_for_update() can't lock a row that doesn't exist yet, so a
+    # real race is: our SELECT finds nothing, a concurrent process commits
+    # the same new ISBN, then OUR OWN create() hits the unique constraint.
+    #
+    # To simulate this with a real (not faked) IntegrityError: the winner
+    # row is genuinely created first, then the *first* call to
+    # select_for_update() within upsert_book is forced to act as if it
+    # found nothing (as it would have, a moment earlier) while every
+    # subsequent call — the one in the except-block recovery path — goes
+    # through untouched to the real manager, which does see the winner.
+    def _force_first_select_for_update_to_find_nothing(self):
+        real_select_for_update = Book.objects.select_for_update
+        call_count = {"n": 0}
+
+        def _side_effect(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                empty_queryset = MagicMock()
+                empty_queryset.filter.return_value.first.return_value = None
+                return empty_queryset
+            return real_select_for_update(*args, **kwargs)
+
+        return patch("books.services.ingest.Book.objects.select_for_update", side_effect=_side_effect)
+
+    def test_integrity_error_on_create_recovers_by_locking_and_updating_the_winner(self):
+        Book.objects.create(isbn13=ISBN, title="Winner's Title", first_seen_month="2025-07")
+
+        with self._force_first_select_for_update_to_find_nothing():
+            book = upsert_book(_ncl_record(title="Our Title"), month="2025-08")
+
+        assert Book.objects.filter(isbn13=ISBN).count() == 1
+        # Recovery still applies the merge rules against the winner's
+        # actual row, not a stale "existing=None" assumption.
+        assert book.title == "Our Title"
+        assert book.first_seen_month == "2025-07"
+
+    def test_race_recovery_still_respects_existing_non_empty_cover(self):
+        Book.objects.create(
+            isbn13=ISBN,
+            title="Winner's Title",
+            first_seen_month="2025-07",
+            cover_image_url="https://cdn.example.com/winner-cover.jpg",
+            cover_image_hosting="self",
+        )
+        google_result = GoogleBooksResult(
+            status="found", isbn13=ISBN, cover_image_url="https://books.google.com/new.jpg"
+        )
+
+        with self._force_first_select_for_update_to_find_nothing():
+            book = upsert_book(_ncl_record(), month="2025-08", google_result=google_result)
+
+        assert book.cover_image_url == "https://cdn.example.com/winner-cover.jpg"
 
 
 @pytest.mark.django_db

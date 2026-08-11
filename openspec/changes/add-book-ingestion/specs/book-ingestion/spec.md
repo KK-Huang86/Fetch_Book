@@ -57,14 +57,18 @@
 - **THEN** 系統留下該次執行的批次紀錄，包含處理月份、觸發方式、執行時間與成功/失敗/enrichment 統計
 
 ### Requirement: Enrichment 查詢之冪等性
-系統 SHALL NOT 對資料庫中已具備非空封面圖片或分類資料的 ISBN，重複查詢 Google Books API。
+系統 SHALL NOT 對資料庫中已同時具備非空封面圖片、且已有至少一筆來源為 Google Books 之分類資料的 ISBN，重複查詢 Google Books API；只要封面或 Google Books 分類其中之一仍缺漏，系統 SHALL 對該 ISBN 查詢 Google Books API（NCL 來源的分類資料不計入此判斷——多數 NCL 書籍本身即帶有 NCL 分類號，若將其計入將導致絕大多數書籍永遠略過 Google Books 查詢，使封面/分類 enrichment 形同失效）。
 
-#### Scenario: 已補齊過的書籍再次執行
-- **WHEN** 某 ISBN 於資料庫中已有非空的封面圖片或分類資料
+#### Scenario: 封面與 Google Books 分類皆已補齊
+- **WHEN** 某 ISBN 於資料庫中已有非空的封面圖片，且已有至少一筆來源為 Google Books 的分類資料
 - **THEN** 系統於該次執行中略過對該 ISBN 的 Google Books 查詢
 
+#### Scenario: 僅補齊其中一項
+- **WHEN** 某 ISBN 於資料庫中已有非空的封面圖片，但尚無來源為 Google Books 的分類資料（或反之）
+- **THEN** 系統於該次執行中仍對該 ISBN 查詢 Google Books API
+
 #### Scenario: 尚未補齊的書籍
-- **WHEN** 某 ISBN 於資料庫中封面圖片與分類資料皆為空
+- **WHEN** 某 ISBN 於資料庫中封面圖片與 Google Books 分類資料皆為空
 - **THEN** 系統於該次執行中對該 ISBN 查詢 Google Books API
 
 ### Requirement: 依書籍分類呈現資料

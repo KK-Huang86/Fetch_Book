@@ -1,3 +1,5 @@
+import pytest
+
 from books.services.merge import ExistingBookState, ResolvedCategory, merge_book_fields
 from books.services.schema import CategoryInput, GoogleBooksResult, ParsedBookRecord
 
@@ -169,3 +171,29 @@ class TestCoverImagePolicy:
         merged = merge_book_fields(_ncl_record(), existing=None, google_result=google_result)
         assert merged.cover_image_url is None
         assert merged.cover_image_hosting is None
+
+
+class TestGoogleResultIsbnMustMatchNclRecord:
+    def test_mismatched_isbn_with_status_found_raises_value_error(self):
+        # Defends the boundary where two sources' data actually gets
+        # combined: a wiring bug elsewhere (wrong ISBN passed to the
+        # Google query) must not silently attach book A's cover/category
+        # to book B's NCL record.
+        google_result = GoogleBooksResult(
+            status="found",
+            isbn13="9789571234564",  # different from _ncl_record()'s ISBN
+            cover_image_url="https://books.google.com/cover.jpg",
+        )
+        with pytest.raises(ValueError):
+            merge_book_fields(_ncl_record(), existing=None, google_result=google_result)
+
+    def test_matching_isbn_with_status_found_does_not_raise(self):
+        google_result = GoogleBooksResult(status="found", isbn13="9786269935468")
+        merge_book_fields(_ncl_record(), existing=None, google_result=google_result)  # no raise
+
+    def test_mismatched_isbn_with_status_not_found_does_not_raise(self):
+        # Only a "found" result with a wrong ISBN is a wiring bug; a
+        # not_found/failed result's isbn13 field isn't being trusted for
+        # any data anyway.
+        google_result = GoogleBooksResult(status="not_found", isbn13="9789571234564")
+        merge_book_fields(_ncl_record(), existing=None, google_result=google_result)  # no raise

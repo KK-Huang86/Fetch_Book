@@ -90,22 +90,57 @@ class TestRecordIngestionFailure:
         )
         assert failure.isbn == "9786269935468"
 
-    def test_message_containing_api_key_pattern_is_rejected(self):
+    def test_message_containing_api_key_pattern_is_redacted_not_rejected(self):
         # design.md decision 12: IngestionFailure.message 不得包含 API 金鑰
         # 或帶金鑰參數的完整請求網址 — defense in depth, in case a future
         # caller forgets to sanitize before calling this.
+        #
+        # Business-logic change from a first version of this behaviour
+        # (PR #12 review, finding 4): that version *rejected* the write
+        # (raised ValueError). But this function is normally called from
+        # exception-handling paths — if it can itself raise, a single bad
+        # message turns "record this one failure" into "abort the whole
+        # batch", which directly undermines the very robustness rule it
+        # was trying to enforce. Redacting and always succeeding is the
+        # correct behaviour, so this test (and the function) changed.
         run = start_ingestion_run("2025-08", trigger_type=IngestionRun.TriggerType.SCHEDULED)
 
-        with pytest.raises(ValueError):
-            record_ingestion_failure(
-                run,
-                stage=IngestionFailure.Stage.GOOGLE_LOOKUP,
-                error_code="HTTP 500",
-                message="failed: https://www.googleapis.com/books/v1/volumes?key=SECRET123",
-                isbn="9786269935468",
-            )
+        failure = record_ingestion_failure(
+            run,
+            stage=IngestionFailure.Stage.GOOGLE_LOOKUP,
+            error_code="HTTP 500",
+            message="failed: https://www.googleapis.com/books/v1/volumes?key=SECRET123&q=isbn:123",
+            isbn="9786269935468",
+        )
 
-        assert not IngestionFailure.objects.filter(run=run).exists()
+        assert "SECRET123" not in failure.message
+        assert "key=[REDACTED]" in failure.message
+
+    def test_message_containing_api_key_underscore_variant_is_redacted(self):
+        run = start_ingestion_run("2025-08", trigger_type=IngestionRun.TriggerType.SCHEDULED)
+
+        failure = record_ingestion_failure(
+            run,
+            stage=IngestionFailure.Stage.GOOGLE_LOOKUP,
+            error_code="HTTP 500",
+            message="failed: ...&api_key=SECRET456&q=...",
+            isbn="9786269935468",
+        )
+
+        assert "SECRET456" not in failure.message
+
+    def test_message_with_key_value_separated_by_spaces_is_redacted(self):
+        run = start_ingestion_run("2025-08", trigger_type=IngestionRun.TriggerType.SCHEDULED)
+
+        failure = record_ingestion_failure(
+            run,
+            stage=IngestionFailure.Stage.GOOGLE_LOOKUP,
+            error_code="HTTP 500",
+            message="failed with key = SECRET789 in request",
+            isbn="9786269935468",
+        )
+
+        assert "SECRET789" not in failure.message
 
     def test_sanitized_message_from_google_books_error_is_accepted(self):
         # The actual shape google_books.py produces post-fix — confirms

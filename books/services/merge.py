@@ -79,6 +79,22 @@ def merge_book_fields(
     """Apply design.md decision 5's field-override rules. Pure function —
     no DB access; `existing` is whatever the caller (seam 5) already read.
     """
+    if (
+        google_result is not None
+        and google_result.status == "found"
+        and google_result.isbn13 != ncl_record.isbn13
+    ):
+        # Merge is the boundary where NCL and Google Books data actually
+        # combine — this should be structurally impossible (the caller
+        # queries Google Books by the NCL record's own ISBN) but a future
+        # wiring bug attaching the wrong book's enrichment must fail
+        # loudly here, not silently corrupt data.
+        raise ValueError(
+            f"google_result.isbn13 ({google_result.isbn13!r}) does not match "
+            f"ncl_record.isbn13 ({ncl_record.isbn13!r}) — refusing to merge "
+            "mismatched enrichment data"
+        )
+
     existing_categories = existing.categories if existing else []
     existing_cover_url = existing.cover_image_url if existing else None
     existing_cover_hosting = existing.cover_image_hosting if existing else None

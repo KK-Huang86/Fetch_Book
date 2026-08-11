@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from books.models import (
@@ -19,10 +19,17 @@ from books.services.merge import ExistingBookState, ResolvedCategory, merge_book
 from books.services.schema import GoogleBooksResult, ParsedBookRecord
 
 # design.md decision 12: IngestionFailure.message 不得包含 API 金鑰或帶金鑰
-# 參數的完整請求網址. This is a defense-in-depth guard at the write layer,
-# not the primary sanitization — sources (e.g. google_books.py) are
-# responsible for not constructing such a message in the first place.
-_FORBIDDEN_MESSAGE_PATTERN = re.compile(r"key=", re.IGNORECASE)
+# 參數的完整請求網址. This is a defense-in-depth *redaction* at the write
+# layer, not the primary sanitization (sources like google_books.py are
+# responsible for not constructing such a message in the first place) and
+# not a rejection either — this function is normally called from
+# exception-handling paths, so it must never itself raise on a bad
+# message, or "record this one failure" turns into "abort the batch".
+_SENSITIVE_QUERY_PARAM_PATTERN = re.compile(r"(?i)\b(api[_-]?key|key)\s*=\s*[^&\s]+")
+
+
+def _redact_sensitive_query_params(message: str) -> str:
+    return _SENSITIVE_QUERY_PARAM_PATTERN.sub(r"\1=[REDACTED]", message)
 
 
 def _read_existing_state(book: Book) -> ExistingBookState:
@@ -73,6 +80,21 @@ def should_query_google_books(isbn13: str) -> bool:
     return not (has_cover and has_google_category)
 
 
+def _get_or_create_publisher(name: str) -> Publisher | None:
+    if not name:
+        return None
+    publisher, _ = Publisher.objects.get_or_create(name=name)
+    return publisher
+
+
+def _write_book_fields(book: Book, merged, publisher: Publisher | None) -> None:
+    book.title = merged.title
+    book.publisher = publisher
+    book.cover_image_url = merged.cover_image_url
+    book.cover_image_hosting = merged.cover_image_hosting
+    book.save()
+
+
 def upsert_book(
     ncl_record: ParsedBookRecord,
     month: str,
@@ -85,26 +107,35 @@ def upsert_book(
         book = Book.objects.select_for_update().filter(isbn13=ncl_record.isbn13).first()
         existing_state = _read_existing_state(book) if book else None
         merged = merge_book_fields(ncl_record, existing_state, google_result)
-
-        publisher = None
-        if merged.publisher:
-            publisher, _ = Publisher.objects.get_or_create(name=merged.publisher)
+        publisher = _get_or_create_publisher(merged.publisher)
 
         if book is None:
-            book = Book.objects.create(
-                isbn13=ncl_record.isbn13,
-                title=merged.title,
-                publisher=publisher,
-                cover_image_url=merged.cover_image_url,
-                cover_image_hosting=merged.cover_image_hosting,
-                first_seen_month=month,
-            )
+            try:
+                # Nested atomic() = savepoint: on IntegrityError only this
+                # insert rolls back, not the whole outer transaction, so
+                # we can keep querying afterwards.
+                with transaction.atomic():
+                    book = Book.objects.create(
+                        isbn13=ncl_record.isbn13,
+                        title=merged.title,
+                        publisher=publisher,
+                        cover_image_url=merged.cover_image_url,
+                        cover_image_hosting=merged.cover_image_hosting,
+                        first_seen_month=month,
+                    )
+            except IntegrityError:
+                # select_for_update() can't lock a row that doesn't exist
+                # — we lost a race with a concurrent insert of the same
+                # new ISBN. Lock and re-merge against the winner's actual
+                # state (not our stale "existing=None" assumption), then
+                # update it instead of failing this run.
+                book = Book.objects.select_for_update().get(isbn13=ncl_record.isbn13)
+                existing_state = _read_existing_state(book)
+                merged = merge_book_fields(ncl_record, existing_state, google_result)
+                publisher = _get_or_create_publisher(merged.publisher)
+                _write_book_fields(book, merged, publisher)
         else:
-            book.title = merged.title
-            book.publisher = publisher
-            book.cover_image_url = merged.cover_image_url
-            book.cover_image_hosting = merged.cover_image_hosting
-            book.save()
+            _write_book_fields(book, merged, publisher)
 
         _apply_authors(book, merged.authors)
         _apply_categories(book, merged.categories)
@@ -145,11 +176,7 @@ def record_ingestion_failure(
     message: str,
     isbn: str | None = None,
 ) -> IngestionFailure:
-    if _FORBIDDEN_MESSAGE_PATTERN.search(message):
-        raise ValueError(
-            "IngestionFailure.message must not contain an API key "
-            "(design.md decision 12) — sanitize the message before recording it"
-        )
+    safe_message = _redact_sensitive_query_params(message)
     return IngestionFailure.objects.create(
-        run=run, isbn=isbn, stage=stage, error_code=error_code, message=message
+        run=run, isbn=isbn, stage=stage, error_code=error_code, message=safe_message
     )

@@ -38,15 +38,18 @@
 
 - [x] 4.1 **(red)** 撰寫測試：書目欄位（title/publisher/authors）以 NCL 覆蓋、categories 聯集累加不刪除既有、cover_image 既有非空值不覆蓋、URL 升級 https 等 design.md 決策 5 的規則；確認測試先為紅燈（`ModuleNotFoundError: books.services.merge`）
 - [x] 4.2 **(green)** 實作 `merge.py`（`merge_book_fields`，新增 `ResolvedCategory`/`ExistingBookState`/`MergedBookFields` 型別——`CategoryInput` 本身不含來源，合併層才需要區分 NCL/Google Books 來源以對應 `Category` 的 unique key），讓 4.1 全數通過
+- [x] 4.3 依 CLAUDE.md 規則檢查（PR review）：`merge_book_fields` 原本未驗證 `google_result.isbn13` 是否等於 `ncl_record.isbn13` 就合併其封面/分類——正常流程不會出錯（呼叫端固定用 NCL 記錄自己的 ISBN 去查 Google Books），但這是兩來源資料真正結合的邊界，未來若接線寫錯會靜默把錯的書籍資料黏到另一本書上；先寫紅燈測試（不符時應 `raise ValueError`）確認會 `DID NOT RAISE`，再補上驗證邏輯
 
 ## 5. Seam 5 — Django ORM Upsert Repository（`books/services/ingest.py` 內的寫入邏輯）
 
 - [x] 5.1 **(red)**（使用 `pytest-django` 的資料庫測試，transaction rollback 隔離）撰寫測試：首次新增新書籍、同 ISBN 重複執行更新既有紀錄（非新增重複列）、categories 累加、authors 覆蓋重建、`cover_image` 既有值保留規則、單筆失敗 rollback 不留下部分寫入；確認測試先為紅燈（`ModuleNotFoundError: books.services.ingest`）
 - [x] 5.2 **(green)** 實作 `upsert_book`（`select_for_update` + `transaction.atomic()` 包裹單筆寫入、失敗 rollback 該筆不影響同批其餘；`Publisher`/`Author`/`Category` 皆以 `get_or_create` 建立，`BookAuthor` 先清除重建、`BookCategory` 只新增不刪除），讓 5.1 全數通過
+- [x] 5.2.1 依 CLAUDE.md 規則檢查（PR review）：`select_for_update()` 無法鎖住尚不存在的資料列，兩個 worker 同時新增同一個新 ISBN 時，其中一個會在 `Book.objects.create()` 撞到 unique constraint 而整個 ingestion 被記成失敗（資料不會重複，但少算一筆成功）。先寫紅燈測試（模擬第一次查詢查無資料、但實際 `create()` 因真實 unique constraint 撞到 `IntegrityError`），確認會直接往外拋出未處理例外；再補上復原邏輯：`create()` 包一層 nested `atomic()`（savepoint），`IntegrityError` 時改為 `select_for_update().get()` 鎖住並對贏家的實際狀態重新跑一次 `merge_book_fields` 後更新，而非讓例外中斷該筆 ingestion
 - [x] 5.3 **(red)** 撰寫測試：enrichment 冪等性判斷（已有非空封面/分類的 ISBN 應跳過 Google Books；尚未補齊的則應查詢；ISBN 尚未存在於資料庫也應查詢；僅 NCL 來源分類不算數，須為 `source=google_books`）；確認測試先為紅燈
 - [x] 5.4 **(green)** 實作 `should_query_google_books`，讓 5.3 全數通過
-- [x] 5.5 **(red)** 撰寫測試：`IngestionRun` 建立（`start_ingestion_run`，狀態/`trigger_type`）與更新（`finish_ingestion_run`，統計欄位、`finished_at`）、`IngestionFailure` 寫入（`record_ingestion_failure`，含訊息含 `key=` 字樣應被拒絕寫入，防禦性守門而非僅依賴上游來源自律）；確認測試先為紅燈
+- [x] 5.5 **(red)** 撰寫測試：`IngestionRun` 建立（`start_ingestion_run`，狀態/`trigger_type`）與更新（`finish_ingestion_run`，統計欄位、`finished_at`）、`IngestionFailure` 寫入（`record_ingestion_failure`）；確認測試先為紅燈
 - [x] 5.6 **(green)** 實作對應寫入邏輯，讓 5.5 全數通過
+- [x] 5.6.1 依 CLAUDE.md 規則檢查（PR review，商業邏輯調整並同步修改測試）：`record_ingestion_failure` 原本對含 `key=` 字樣的訊息直接 `raise ValueError` 拒絕寫入，但這個函式通常從例外處理路徑呼叫，若自己又拋例外，會讓「記錄這一筆失敗」變成「整批中斷」，違反「單筆失敗不中斷整批」的核心規則；改為 redact（`key=[REDACTED]`）後正常寫入，永不拋出。原本斷言「拒絕寫入」的測試已同步改寫為斷言「redact 後寫入成功」，並補上 `api_key=`、`key = ` 等變體案例
 
 ## 6. Seam 6 — Management Command（手動觸發，`books/management/commands/ingest_books.py`）
 
