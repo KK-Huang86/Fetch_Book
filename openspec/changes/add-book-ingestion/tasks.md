@@ -30,9 +30,9 @@
 
 ## 3. Seam 3 — Google Books 查詢（`books/sources/google_books.py`）
 
-- [ ] 3.1 建立 mock HTTP 回應 fixture：成功（含多個 `industryIdentifiers`）、查無資料、429、5xx、timeout
-- [ ] 3.2 **(red)** 撰寫查詢函式測試（HTTP 以 mock 取代），涵蓋 3.1 各情境、`industryIdentifiers` 優先序、逾時與重試（僅 429/5xx/timeout 重試、4xx 不重試、最多 3 次、尊重 `Retry-After`）；確認測試先為紅燈
-- [ ] 3.3 **(green)** 實作查詢函式、逾時（連線 5s／讀取 10s）、重試與退避＋jitter 邏輯，讓 3.2 全數通過
+- [x] 3.1 建立 mock HTTP 回應 fixture：成功（含多個 `industryIdentifiers`）、查無資料、429、5xx、timeout（`books/tests/test_google_books.py` 內以 respx 建構，非另存檔案，因為是 API JSON 回應而非下載樣本）
+- [x] 3.2 **(red)** 撰寫查詢函式測試（HTTP 以 mock 取代），涵蓋 3.1 各情境、`industryIdentifiers` 優先序、逾時與重試（僅 429/502/503/504/timeout 重試、其他 4xx 與 500 不重試、最多 3 次、尊重 `Retry-After`、總等待上限 30 秒）；確認測試先為紅燈（`ModuleNotFoundError: books.sources.google_books`）
+- [x] 3.3 **(green)** 實作 `query_google_books_by_isbn`（`books/sources/google_books.py`）：逾時（連線 5s／讀取 10s）、重試與退避＋jitter＋`Retry-After` 優先、總等待時間以剩餘預算裁切；回傳 `GoogleBooksResult`（`found`/`not_found`/`failed`，見 `books/services/schema.py`），不拋出未處理例外，讓 3.2 全數通過
 
 ## 4. Seam 4 — 合併/欄位覆蓋規則（`books/services/merge.py`）
 
