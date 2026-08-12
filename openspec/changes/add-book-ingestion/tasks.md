@@ -53,13 +53,13 @@
 
 ## 6. Seam 6 — Management Command（手動觸發，`books/management/commands/ingest_books.py`）
 
-- [ ] 6.1 **(red)** 撰寫測試：`--month` 格式驗證（含合法/不合法格式）、缺 Google Books API 金鑰情境、當月 404（手動觸發下視為明確錯誤）、對應 exit code（0 成功/部分成功、1 致命錯誤、2 參數錯誤）；確認測試先為紅燈
-- [ ] 6.2 **(green)** 實作 management command，讓 6.1 全數通過
+- [x] 6.1 **(red)** 撰寫測試：`--month` 格式驗證（缺參數、含合法/不合法格式）、缺 Google Books API 金鑰情境（且應在呼叫 `ingest_month` 前就攔下）、exit code（0 成功/部分成功、1 致命錯誤、2 參數錯誤）、呼叫 `ingest_month` 時固定帶 `trigger_type='manual'`、summary 輸出至 stdout；確認測試先為紅燈（`ModuleNotFoundError: books.management.commands.ingest_books`）
+- [x] 6.2 **(green)** 實作 management command（`--month` 格式與 API 金鑰檢查皆用 `sys.exit()` 直接控制 exit code，不依賴 Django `CommandError` 預設的固定 exit 1，才能同時支援 0/1/2 三種 code），讓 6.1 全數通過
 
 ## 7. Seam 7 — `ingest_month` service 整合流程（端到端，框架無關）
 
-- [ ] 7.1 **(red)** 撰寫整合測試：以 mock 的 NCL/Google Books adapter ＋ 測試用資料庫，驗證整體流程——成功案例、單筆失敗不中斷整批且正確寫入 `IngestionFailure`、enrichment 冪等性在完整流程中生效、當月 404 時回傳明確的「尚未公告」結果；確認測試先為紅燈
-- [ ] 7.2 **(green)** 實作 `ingest_month(month, trigger_type)`（NCL 下載解析 → 逐筆檢查既有紀錄與冪等性 → 視需要呼叫 Google Books → upsert → 更新批次統計），讓 7.1 全數通過
+- [x] 7.1 **(red)** 撰寫整合測試：mock `download_ncl_csv`/`query_google_books_by_isbn`（真實 `parse_ncl_csv` 對已知 fixture 解析）＋測試用資料庫，涵蓋成功案例、單筆解析失敗不中斷整批且正確寫入 `IngestionFailure`、單筆 upsert 例外不中斷整批、enrichment 冪等性在完整流程中生效（第二次執行不重複查詢已補齊的書）、Google 查詢失敗時該書仍以 NCL 資料寫入且不中斷、同一 CSV 內重複 ISBN 以最後一筆為準並記錄一筆 warning、當月 404 時排程觸發回傳 `skipped_not_yet_published`／手動觸發回傳明確 `failed`、下載逾時等其他錯誤整批標記失敗且不留部分資料；確認測試先為紅燈（`ImportError: cannot import name 'ingest_month'`）
+- [x] 7.2 **(green)** 實作 `ingest_month(month, trigger_type)`（NCL 下載解析 → 重複 ISBN warning → 逐筆冪等性檢查 → 視需要呼叫 Google Books → upsert → 統計與 `IngestionRun.status` 判定：`total==0` 或 `failed==0` 為 succeeded、`succeeded==0` 為 failed、其餘為 partially_failed），讓 7.1 全數通過
 
 ## 8. Seam 8 — Celery Task（排程觸發，`books/tasks.py`）
 

@@ -183,6 +183,15 @@ python manage.py ingest_books --month YYYY-MM
 ### 12. 執行紀錄與失敗紀錄
 執行開始時建立一筆 `IngestionRun`（`status='running'`，記錄 `trigger_type`），過程中的失敗逐筆寫入 `IngestionFailure`，執行結束時更新 `IngestionRun` 的統計欄位與最終 `status`（`succeeded`／`partially_failed`／`failed`／`skipped_not_yet_published`）。同時將摘要印至 stdout/log。`IngestionFailure.message` 不得包含 API 金鑰或帶金鑰參數的完整請求網址。
 
+**`status` 判定規則**（`total`／`succeeded`／`failed` 皆為本次 NCL 列處理結果，不含 `skipped_not_yet_published` 這種完全沒有列可處理的情況，那由決策 10 的 404 分支單獨決定）：
+- `total == 0`（空檔案）或 `failed == 0`（全部成功）→ `succeeded`
+- `succeeded == 0` 且 `failed > 0`（全部失敗，含空檔案以外的情況）→ `failed`
+- 其餘（部分成功部分失敗）→ `partially_failed`
+
+**同一 CSV 內重複 ISBN**（決策 4）：以最後一筆為準——因為每筆都各自呼叫 upsert，後面的自然覆蓋前面的，不需要額外邏輯；但仍在 `ingest_month` 逐一統計後，對每個重複出現的 ISBN 記錄一筆 `IngestionFailure`（`stage=ncl_parse`, `error_code=duplicate_isbn_in_csv`）作為 warning，方便事後追查來源資料品質。
+
+**Google Books 查詢失敗（非 not_found）時該筆書籍的處理**：依 spec「Google Books 查無對應資料」情境，NCL 資料仍照常 upsert（該筆計入 `succeeded`，缺漏欄位維持空值），並額外記錄一筆 `IngestionFailure`（`stage=google_lookup`）；`google_enriched` 只在 `status='found'` 時累加。
+
 ### 13. Migration 管理
 使用 Django 內建 migrations（`manage.py makemigrations`/`migrate`）管理 schema 變更，取代先前評估過的 Alembic 方案。初始 migration 建立決策 3 列出的全部 models。
 
