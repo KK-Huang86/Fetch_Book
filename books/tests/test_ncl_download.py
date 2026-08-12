@@ -21,7 +21,17 @@ class TestBuildNclCsvUrl:
         )
 
     @pytest.mark.parametrize(
-        "month", ["2025/08", "202508", "25-08", "", "2025-13-bad", "2025-8"]
+        "month",
+        [
+            "2025/08",
+            "202508",
+            "25-08",
+            "",
+            "2025-13-bad",
+            "2025-8",
+            "2025-13",  # shaped like YYYY-MM but not a real month
+            "2025-00",
+        ],
     )
     def test_malformed_month_string_raises_value_error(self, month):
         with pytest.raises(ValueError):
