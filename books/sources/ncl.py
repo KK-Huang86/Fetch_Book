@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import io
-import re
 
 import httpx
 
@@ -10,6 +9,7 @@ from books.services.schema import (
     CategoryInput,
     ParsedBookRecord,
     ParseFailure,
+    is_valid_month,
     normalize_isbn,
     split_authors,
 )
@@ -22,7 +22,6 @@ _SHELF_CATEGORY_FIELDS = ("建議上架分類", "常用分類")  # 常用分類�
 _SUBJECT_TAG_FIELD = "圖書主題"
 
 NCL_BASE_URL = "https://isbn.ncl.edu.tw/NEW_ISBNNet/opendata/{year_month}_isbn.csv"
-_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 
 # design.md decision 8: no published NCL timeout SLA, so this mirrors
 # decision 9's Google Books connect timeout; read is longer since a
@@ -50,7 +49,7 @@ class NclNetworkError(NclDownloadError):
 def build_ncl_csv_url(month: str) -> str:
     """Build the monthly CSV URL. `month` must be `YYYY-MM` (Gregorian
     year — confirmed by real request, see design.md decision 8)."""
-    if not isinstance(month, str) or not _MONTH_PATTERN.fullmatch(month):
+    if not is_valid_month(month):
         raise ValueError(f"month must be in YYYY-MM format, got {month!r}")
     year_month = month.replace("-", "")
     return NCL_BASE_URL.format(year_month=year_month)

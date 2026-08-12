@@ -214,28 +214,53 @@ def ingest_month(month: str, trigger_type: str) -> IngestionRun:
     """
     run = start_ingestion_run(month, trigger_type)
 
-    with httpx.Client() as client:
-        try:
-            raw_csv = download_ncl_csv(month, client)
-        except NclNotFoundError as exc:
-            if trigger_type == IngestionRun.TriggerType.SCHEDULED:
-                # design.md decision 10: not a failure when scheduled —
-                # the Celery task (seam 8) will simply try again tomorrow.
-                finish_ingestion_run(
-                    run,
-                    status=IngestionRun.Status.SKIPPED_NOT_YET_PUBLISHED,
-                    total=0,
-                    succeeded=0,
-                    failed=0,
-                    google_enriched=0,
-                )
-            else:
-                # design.md decision 10: manual trigger picked this month
-                # on purpose, so 404 must be reported as an explicit error.
+    # Declared before the try so the outer except (anything NOT already
+    # handled by the narrower except clauses below) can still report
+    # however far the batch actually got, instead of always 0/0/0/0.
+    total = 0
+    succeeded = 0
+    failed = 0
+    google_enriched = 0
+
+    try:
+        with httpx.Client() as client:
+            try:
+                raw_csv = download_ncl_csv(month, client)
+            except NclNotFoundError as exc:
+                if trigger_type == IngestionRun.TriggerType.SCHEDULED:
+                    # design.md decision 10: not a failure when scheduled —
+                    # the Celery task (seam 8) will simply try again tomorrow.
+                    finish_ingestion_run(
+                        run,
+                        status=IngestionRun.Status.SKIPPED_NOT_YET_PUBLISHED,
+                        total=0,
+                        succeeded=0,
+                        failed=0,
+                        google_enriched=0,
+                    )
+                else:
+                    # design.md decision 10: manual trigger picked this
+                    # month on purpose, so 404 must be an explicit error.
+                    record_ingestion_failure(
+                        run,
+                        stage=IngestionFailure.Stage.NCL_DOWNLOAD,
+                        error_code="not_yet_published",
+                        message=str(exc),
+                    )
+                    finish_ingestion_run(
+                        run,
+                        status=IngestionRun.Status.FAILED,
+                        total=0,
+                        succeeded=0,
+                        failed=1,
+                        google_enriched=0,
+                    )
+                return run
+            except NclDownloadError as exc:
                 record_ingestion_failure(
                     run,
                     stage=IngestionFailure.Stage.NCL_DOWNLOAD,
-                    error_code="not_yet_published",
+                    error_code=type(exc).__name__,
                     message=str(exc),
                 )
                 finish_ingestion_run(
@@ -246,86 +271,91 @@ def ingest_month(month: str, trigger_type: str) -> IngestionRun:
                     failed=1,
                     google_enriched=0,
                 )
-            return run
-        except NclDownloadError as exc:
-            record_ingestion_failure(
-                run,
-                stage=IngestionFailure.Stage.NCL_DOWNLOAD,
-                error_code=type(exc).__name__,
-                message=str(exc),
-            )
-            finish_ingestion_run(
-                run,
-                status=IngestionRun.Status.FAILED,
-                total=0,
-                succeeded=0,
-                failed=1,
-                google_enriched=0,
-            )
-            return run
+                return run
 
-        records, parse_failures = parse_ncl_csv(raw_csv)
+            records, parse_failures = parse_ncl_csv(raw_csv)
 
-        for failure in parse_failures:
-            record_ingestion_failure(
-                run,
-                stage=IngestionFailure.Stage.NCL_PARSE,
-                error_code=failure.error_code,
-                message=failure.message,
-                isbn=failure.isbn,
-            )
-        _record_duplicate_isbn_warnings(run, records)
+            for failure in parse_failures:
+                record_ingestion_failure(
+                    run,
+                    stage=IngestionFailure.Stage.NCL_PARSE,
+                    error_code=failure.error_code,
+                    message=failure.message,
+                    isbn=failure.isbn,
+                )
+            _record_duplicate_isbn_warnings(run, records)
 
-        succeeded = 0
-        failed = len(parse_failures)
-        google_enriched = 0
-        api_key = settings.GOOGLE_BOOKS_API_KEY
+            failed = len(parse_failures)
+            api_key = settings.GOOGLE_BOOKS_API_KEY
 
-        for record in records:
-            google_result: GoogleBooksResult | None = None
-            if should_query_google_books(record.isbn13):
-                google_result = query_google_books_by_isbn(record.isbn13, client, api_key)
-                if google_result.status == "found":
-                    google_enriched += 1
-                elif google_result.status == "failed":
-                    # design.md spec "Google Books 查無對應資料": keep the
-                    # NCL data, record the lookup failure, don't abort.
+            for record in records:
+                google_result: GoogleBooksResult | None = None
+                if should_query_google_books(record.isbn13):
+                    google_result = query_google_books_by_isbn(record.isbn13, client, api_key)
+                    if google_result.status == "found":
+                        google_enriched += 1
+                    elif google_result.status == "failed":
+                        # design.md spec "Google Books 查無對應資料": keep
+                        # the NCL data, record the lookup failure, don't
+                        # abort.
+                        record_ingestion_failure(
+                            run,
+                            stage=IngestionFailure.Stage.GOOGLE_LOOKUP,
+                            error_code=google_result.error_message or "unknown_error",
+                            message=google_result.error_message or "",
+                            isbn=record.isbn13,
+                        )
+
+                try:
+                    upsert_book(record, month, google_result)
+                    succeeded += 1
+                except Exception as exc:  # noqa: BLE001 — boundary: one
+                    # bad book must not abort the rest of the batch.
+                    failed += 1
                     record_ingestion_failure(
                         run,
-                        stage=IngestionFailure.Stage.GOOGLE_LOOKUP,
-                        error_code=google_result.error_message or "unknown_error",
-                        message=google_result.error_message or "",
+                        stage=IngestionFailure.Stage.BOOK_UPSERT,
+                        error_code=type(exc).__name__,
+                        message=str(exc),
                         isbn=record.isbn13,
                     )
 
-            try:
-                upsert_book(record, month, google_result)
-                succeeded += 1
-            except Exception as exc:  # noqa: BLE001 — boundary: one bad
-                # book must not abort the rest of the batch.
-                failed += 1
-                record_ingestion_failure(
-                    run,
-                    stage=IngestionFailure.Stage.BOOK_UPSERT,
-                    error_code=type(exc).__name__,
-                    message=str(exc),
-                    isbn=record.isbn13,
-                )
+        total = len(records) + len(parse_failures)
+        if total == 0 or failed == 0:
+            status = IngestionRun.Status.SUCCEEDED
+        elif succeeded == 0:
+            status = IngestionRun.Status.FAILED
+        else:
+            status = IngestionRun.Status.PARTIALLY_FAILED
 
-    total = len(records) + len(parse_failures)
-    if total == 0 or failed == 0:
-        status = IngestionRun.Status.SUCCEEDED
-    elif succeeded == 0:
-        status = IngestionRun.Status.FAILED
-    else:
-        status = IngestionRun.Status.PARTIALLY_FAILED
-
-    finish_ingestion_run(
-        run,
-        status=status,
-        total=total,
-        succeeded=succeeded,
-        failed=failed,
-        google_enriched=google_enriched,
-    )
-    return run
+        finish_ingestion_run(
+            run,
+            status=status,
+            total=total,
+            succeeded=succeeded,
+            failed=failed,
+            google_enriched=google_enriched,
+        )
+        return run
+    except Exception as exc:
+        # Anything not already handled above (CSV decode errors, a DB
+        # error from should_query_google_books, a genuine bug in an
+        # adapter, ...) must not leave this run stuck at status='running'
+        # forever (spec: 非預期錯誤 MUST 標記為失敗並保留可查詢的失敗紀
+        # 錄). Re-raise afterwards so a manual command can report exit 1
+        # and a future Celery task (issue #8) can still retry.
+        record_ingestion_failure(
+            run,
+            stage=IngestionFailure.Stage.INGESTION,
+            error_code=type(exc).__name__,
+            message=str(exc),
+        )
+        finish_ingestion_run(
+            run,
+            status=IngestionRun.Status.FAILED,
+            total=total,
+            succeeded=succeeded,
+            failed=max(failed, 1),
+            google_enriched=google_enriched,
+        )
+        raise

@@ -211,3 +211,65 @@ class TestNclDownloadError:
         assert run.total == 0
         assert run.failures.filter(stage=IngestionFailure.Stage.NCL_DOWNLOAD).count() == 1
         assert Book.objects.count() == 0
+
+
+@pytest.mark.django_db
+class TestUnexpectedExceptionsDoNotLeaveARunningRun:
+    # PR #13 review, finding 1: anything not explicitly handled (NCL parse
+    # crashing on bad bytes, a DB error from should_query_google_books, an
+    # actual bug in the Google adapter, ...) used to propagate straight out
+    # of ingest_month, leaving IngestionRun stuck at status='running' /
+    # finished_at=NULL forever — violating spec's "非預期錯誤...MUST將該次
+    # 執行標記為失敗並保留可查詢的失敗紀錄". The fix re-raises (so a future
+    # Celery task can still retry) but always finishes the run as failed
+    # first.
+
+    @patch("books.services.ingest.parse_ncl_csv")
+    @patch("books.services.ingest.download_ncl_csv")
+    def test_parse_crash_marks_run_failed_and_still_reraises(self, mock_download, mock_parse):
+        mock_download.return_value = _read("ncl_normal.csv")
+        mock_parse.side_effect = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        with pytest.raises(UnicodeDecodeError):
+            ingest_month("2025-08", trigger_type=IngestionRun.TriggerType.SCHEDULED)
+
+        run = IngestionRun.objects.get(month="2025-08")
+        assert run.status == IngestionRun.Status.FAILED
+        assert run.finished_at is not None
+        assert run.failures.filter(stage=IngestionFailure.Stage.INGESTION).exists()
+
+    @patch("books.services.ingest.should_query_google_books")
+    @patch("books.services.ingest.download_ncl_csv")
+    def test_idempotency_check_db_error_marks_run_failed_and_reraises(
+        self, mock_download, mock_should_query
+    ):
+        mock_download.return_value = _read("ncl_normal.csv")
+        mock_should_query.side_effect = RuntimeError("connection to server lost")
+
+        with pytest.raises(RuntimeError):
+            ingest_month("2025-09", trigger_type=IngestionRun.TriggerType.SCHEDULED)
+
+        run = IngestionRun.objects.get(month="2025-09")
+        assert run.status == IngestionRun.Status.FAILED
+        assert run.finished_at is not None
+
+    @patch("books.services.ingest.query_google_books_by_isbn")
+    @patch("books.services.ingest.download_ncl_csv")
+    def test_google_adapter_bug_marks_run_failed_and_reraises(self, mock_download, mock_google):
+        mock_download.return_value = _read("ncl_normal.csv")
+        mock_google.side_effect = ValueError("adapter bug, not a GoogleBooksResult")
+
+        with pytest.raises(ValueError):
+            ingest_month("2025-10", trigger_type=IngestionRun.TriggerType.SCHEDULED)
+
+        run = IngestionRun.objects.get(month="2025-10")
+        assert run.status == IngestionRun.Status.FAILED
+
+    def test_never_leaves_a_run_stuck_in_running_status(self):
+        with patch("books.services.ingest.download_ncl_csv", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                ingest_month("2025-11", trigger_type=IngestionRun.TriggerType.SCHEDULED)
+
+        run = IngestionRun.objects.get(month="2025-11")
+        assert run.status != IngestionRun.Status.RUNNING
+        assert run.finished_at is not None

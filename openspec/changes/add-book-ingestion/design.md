@@ -176,9 +176,10 @@ IngestionFailure
 ```
 python manage.py ingest_books --month YYYY-MM
 ```
-- `--month`：必填，格式驗證。
-- 內部呼叫 `ingest_month(month)` service 函式，`trigger_type='manual'`。
-- Exit code：`0` 成功／部分成功；`1` 致命錯誤（含手動觸發下的 404）；`2` 參數錯誤。
+- `--month`：必填，格式與語意驗證（`books/services/schema.py::is_valid_month`，與 `build_ncl_csv_url` 共用同一份規則，拒絕 `2025-13` 這類形狀正確但月份無效的輸入，避免組出不存在的 NCL 網址、被誤判成「尚未公告」）。
+- 內部呼叫 `ingest_month(month, trigger_type='manual')` service 函式。
+- 依 Django 慣例實作：成功時 `handle()` 直接 `return`（不主動 `sys.exit`）；失敗時 `raise CommandError(msg, returncode=N)`，由 Django 在透過 `manage.py` 實際執行時轉換為對應的 process exit code；`call_command()`（測試或其他程式碼呼叫）則直接以 `CommandError`/正常回傳表達結果，不強制 `SystemExit`。
+- Exit code（`CommandError.returncode`）：`0` 成功／部分成功（無例外，正常 `return`）；`1` 致命錯誤（缺 `GOOGLE_BOOKS_API_KEY`、`ingest_month` 拋出未預期例外、`IngestionRun.status=='failed'`，含手動觸發下的 404）；`2` 參數錯誤（`--month` 缺漏或格式/語意無效）。
 
 ### 12. 執行紀錄與失敗紀錄
 執行開始時建立一筆 `IngestionRun`（`status='running'`，記錄 `trigger_type`），過程中的失敗逐筆寫入 `IngestionFailure`，執行結束時更新 `IngestionRun` 的統計欄位與最終 `status`（`succeeded`／`partially_failed`／`failed`／`skipped_not_yet_published`）。同時將摘要印至 stdout/log。`IngestionFailure.message` 不得包含 API 金鑰或帶金鑰參數的完整請求網址。
@@ -189,6 +190,8 @@ python manage.py ingest_books --month YYYY-MM
 - 其餘（部分成功部分失敗）→ `partially_failed`
 
 **同一 CSV 內重複 ISBN**（決策 4）：以最後一筆為準——因為每筆都各自呼叫 upsert，後面的自然覆蓋前面的，不需要額外邏輯；但仍在 `ingest_month` 逐一統計後，對每個重複出現的 ISBN 記錄一筆 `IngestionFailure`（`stage=ncl_parse`, `error_code=duplicate_isbn_in_csv`）作為 warning，方便事後追查來源資料品質。
+
+**非預期例外的收尾**：`ingest_month` 內部已明確處理的分支（NCL 404、NCL 下載錯誤、單筆 upsert 失敗）都會正常走完並回傳 `IngestionRun`；其餘任何未預期例外（CSV 解碼失敗、`should_query_google_books` 的資料庫錯誤、adapter 本身的程式錯誤等）由最外層的 orchestration guard 統一接住：寫入一筆 `IngestionFailure`（`stage=ingestion`，對應 `IngestionFailure.Stage` 中「未分類」的選項）、將 `IngestionRun.status` 標記為 `failed`（沿用例外發生前已知的統計數字，`failed` 至少為 1，不歸零重算），**再重新拋出例外**——不吞掉、不僅記錄——讓手動 management command 轉換為 `CommandError(returncode=1)`，未來 Celery task（issue #8）可以依 `autoretry_for` 機制重試。這確保任何情況下 `IngestionRun` 都不會永久停在 `status='running'`。
 
 **Google Books 查詢失敗（非 not_found）時該筆書籍的處理**：依 spec「Google Books 查無對應資料」情境，NCL 資料仍照常 upsert（該筆計入 `succeeded`，缺漏欄位維持空值），並額外記錄一筆 `IngestionFailure`（`stage=google_lookup`）；`google_enriched` 只在 `status='found'` 時累加。
 

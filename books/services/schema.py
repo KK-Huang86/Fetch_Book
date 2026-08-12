@@ -156,3 +156,14 @@ def normalize_isbn(raw: str | None) -> str | None:
         return cleaned
 
     return None
+
+
+_MONTH_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+def is_valid_month(value: object) -> bool:
+    """Single shared YYYY-MM validator — semantically valid (01-12), not
+    just shaped like a date, so an out-of-range month (e.g. "2025-13")
+    can't slip through to build_ncl_csv_url and get misread as a 404
+    "not yet published" instead of a caller error."""
+    return isinstance(value, str) and bool(_MONTH_PATTERN.fullmatch(value))

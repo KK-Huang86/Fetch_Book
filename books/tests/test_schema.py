@@ -1,6 +1,6 @@
 import pytest
 
-from books.services.schema import normalize_isbn, split_authors
+from books.services.schema import is_valid_month, normalize_isbn, split_authors
 
 
 class TestNormalizeIsbn:
@@ -79,3 +79,27 @@ class TestSplitAuthors:
         # segment IS a role word (malformed source data), keep it rather
         # than silently dropping the author entirely.
         assert split_authors("主編") == ["主編"]
+
+
+class TestIsValidMonth:
+    @pytest.mark.parametrize("month", ["2025-01", "2025-12", "0001-01", "9999-12"])
+    def test_valid_yyyy_mm_returns_true(self, month):
+        assert is_valid_month(month) is True
+
+    @pytest.mark.parametrize(
+        "month",
+        [
+            "2025-13",  # no month 13
+            "2025-00",  # no month 0
+            "0000-99",
+            "2025/01",
+            "202501",
+            "2025-1",
+            "25-01",
+            "",
+            None,
+            2025,
+        ],
+    )
+    def test_invalid_month_returns_false(self, month):
+        assert is_valid_month(month) is False

@@ -54,12 +54,16 @@
 ## 6. Seam 6 — Management Command（手動觸發，`books/management/commands/ingest_books.py`）
 
 - [x] 6.1 **(red)** 撰寫測試：`--month` 格式驗證（缺參數、含合法/不合法格式）、缺 Google Books API 金鑰情境（且應在呼叫 `ingest_month` 前就攔下）、exit code（0 成功/部分成功、1 致命錯誤、2 參數錯誤）、呼叫 `ingest_month` 時固定帶 `trigger_type='manual'`、summary 輸出至 stdout；確認測試先為紅燈（`ModuleNotFoundError: books.management.commands.ingest_books`）
-- [x] 6.2 **(green)** 實作 management command（`--month` 格式與 API 金鑰檢查皆用 `sys.exit()` 直接控制 exit code，不依賴 Django `CommandError` 預設的固定 exit 1，才能同時支援 0/1/2 三種 code），讓 6.1 全數通過
+- [x] 6.2 **(green)** 實作 management command，讓 6.1 全數通過
+- [x] 6.3 依 CLAUDE.md 規則檢查（PR review，商業邏輯調整並同步修改測試）：
+  - 月份驗證改用 `books/services/schema.py::is_valid_month` 共用函式（拒絕 `2025-13`/`2025-00` 這類形狀正確但語意無效的月份，避免組出不存在的 NCL 網址、被誤判成「尚未公告」），`books/sources/ncl.py::build_ncl_csv_url` 同步改用同一份驗證，不再各自維護一份寬鬆 regex
+  - Command 改為 Django 慣例：成功路徑 `return`（不再無條件 `sys.exit(0)`），失敗路徑一律 `raise CommandError(msg, returncode=N)`（2=參數錯誤、1=致命錯誤/API金鑰缺失/`ingest_month` 拋出未預期例外/`IngestionRun.status=='failed'`）；原本用 `sys.exit()` 的測試已同步改寫為斷言 `CommandError`/正常 `return`，因為 `sys.exit(0)` 會讓 `call_command()` 在任何呼叫情境（含其他程式碼重用、測試組合）都無條件拋出 `SystemExit`，不是 Django 慣例
 
 ## 7. Seam 7 — `ingest_month` service 整合流程（端到端，框架無關）
 
 - [x] 7.1 **(red)** 撰寫整合測試：mock `download_ncl_csv`/`query_google_books_by_isbn`（真實 `parse_ncl_csv` 對已知 fixture 解析）＋測試用資料庫，涵蓋成功案例、單筆解析失敗不中斷整批且正確寫入 `IngestionFailure`、單筆 upsert 例外不中斷整批、enrichment 冪等性在完整流程中生效（第二次執行不重複查詢已補齊的書）、Google 查詢失敗時該書仍以 NCL 資料寫入且不中斷、同一 CSV 內重複 ISBN 以最後一筆為準並記錄一筆 warning、當月 404 時排程觸發回傳 `skipped_not_yet_published`／手動觸發回傳明確 `failed`、下載逾時等其他錯誤整批標記失敗且不留部分資料；確認測試先為紅燈（`ImportError: cannot import name 'ingest_month'`）
 - [x] 7.2 **(green)** 實作 `ingest_month(month, trigger_type)`（NCL 下載解析 → 重複 ISBN warning → 逐筆冪等性檢查 → 視需要呼叫 Google Books → upsert → 統計與 `IngestionRun.status` 判定：`total==0` 或 `failed==0` 為 succeeded、`succeeded==0` 為 failed、其餘為 partially_failed），讓 7.1 全數通過
+- [x] 7.3 依 CLAUDE.md 規則檢查（PR review High finding）：原本只處理 `NclNotFoundError`/`NclDownloadError`/單筆 `upsert_book` 例外，CSV 解碼失敗、`should_query_google_books` 的資料庫錯誤、Google adapter 未預期錯誤等任何其他例外都會直接往外拋，讓 `IngestionRun` 永久停在 `status='running'`、`finished_at=NULL`，牴觸 spec 的「非預期錯誤 MUST 標記為失敗並保留可查詢的失敗紀錄」。先寫紅燈測試（確認 run 卡在 running），再加上外層 try/except：捕捉後寫入一筆 `IngestionFailure`（`stage=ingestion`）、將 run 標記為 `failed`（保留已知的部分統計，不歸零），再重新拋出例外（讓手動指令回報 exit 1、未來 Celery task 仍可重試）
 
 ## 8. Seam 8 — Celery Task（排程觸發，`books/tasks.py`）
 
