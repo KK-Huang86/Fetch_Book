@@ -96,6 +96,25 @@ class TestUnexpectedIngestMonthException:
         assert exc_info.value.returncode == 1
         assert exc_info.value.__cause__ is not None
 
+    @patch("books.management.commands.ingest_books.ingest_month")
+    def test_error_message_does_not_leak_the_original_exception_text(
+        self, mock_ingest_month, settings
+    ):
+        # PR #13 review round 2, extra security note: str(exc) could
+        # in principle carry a URL/secret from a genuinely novel bug that
+        # slipped past every other sanitization layer. Only the exception
+        # *type* belongs in a message that reaches stderr — the original
+        # exception is still available via __cause__ for anyone with log
+        # access, and the full detail lives in IngestionFailure.
+        settings.GOOGLE_BOOKS_API_KEY = "test-key"
+        mock_ingest_month.side_effect = RuntimeError("secret=SUPER_SECRET_TOKEN in this message")
+
+        with pytest.raises(CommandError) as exc_info:
+            call_command("ingest_books", "--month", "2025-08")
+
+        assert "SUPER_SECRET_TOKEN" not in str(exc_info.value)
+        assert "RuntimeError" in str(exc_info.value)
+
 
 @pytest.mark.django_db
 class TestExitBehaviorFollowsRunStatus:

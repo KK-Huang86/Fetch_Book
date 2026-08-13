@@ -274,6 +274,10 @@ def ingest_month(month: str, trigger_type: str) -> IngestionRun:
                 return run
 
             records, parse_failures = parse_ncl_csv(raw_csv)
+            # Set as soon as it's knowable, not after the book loop — a
+            # fatal error partway through must still report the real
+            # total (see the outer except below).
+            total = len(records) + len(parse_failures)
 
             for failure in parse_failures:
                 record_ingestion_failure(
@@ -320,7 +324,6 @@ def ingest_month(month: str, trigger_type: str) -> IngestionRun:
                         isbn=record.isbn13,
                     )
 
-        total = len(records) + len(parse_failures)
         if total == 0 or failed == 0:
             status = IngestionRun.Status.SUCCEEDED
         elif succeeded == 0:
@@ -344,18 +347,30 @@ def ingest_month(month: str, trigger_type: str) -> IngestionRun:
         # forever (spec: 非預期錯誤 MUST 標記為失敗並保留可查詢的失敗紀
         # 錄). Re-raise afterwards so a manual command can report exit 1
         # and a future Celery task (issue #8) can still retry.
-        record_ingestion_failure(
-            run,
-            stage=IngestionFailure.Stage.INGESTION,
-            error_code=type(exc).__name__,
-            message=str(exc),
-        )
-        finish_ingestion_run(
-            run,
-            status=IngestionRun.Status.FAILED,
-            total=total,
-            succeeded=succeeded,
-            failed=max(failed, 1),
-            google_enriched=google_enriched,
-        )
+        #
+        # v1 has no separate skipped/aborted counter: every row not
+        # already confirmed succeeded counts as failed, so
+        # total == succeeded + failed still holds even on a fatal
+        # mid-batch abort (total was set as soon as parsing finished,
+        # above — not left at its initial 0).
+        try:
+            record_ingestion_failure(
+                run,
+                stage=IngestionFailure.Stage.INGESTION,
+                error_code=type(exc).__name__,
+                message=str(exc),
+            )
+        finally:
+            # Best-effort: if even *recording* the failure raised (e.g.
+            # the DB write itself is what's broken), still try to close
+            # out the run rather than leaving it running on top of that.
+            # This can't be a hard guarantee under a total DB outage.
+            finish_ingestion_run(
+                run,
+                status=IngestionRun.Status.FAILED,
+                total=total,
+                succeeded=succeeded,
+                failed=max(total - succeeded, 1),
+                google_enriched=google_enriched,
+            )
         raise

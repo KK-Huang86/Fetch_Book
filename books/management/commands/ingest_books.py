@@ -34,8 +34,14 @@ class Command(BaseCommand):
         try:
             run = ingest_month(month, trigger_type=IngestionRun.TriggerType.MANUAL)
         except Exception as exc:
+            # Only the exception type, never str(exc) — a genuinely novel
+            # bug could in principle carry a URL/secret this far even
+            # after every other sanitization layer. Full detail (already
+            # redacted) is on the IngestionFailure row; __cause__ still
+            # carries the original exception for anyone with log access.
             raise CommandError(
-                f"ingest_month raised an unexpected error: {exc}", returncode=1
+                f"ingest_month raised {type(exc).__name__}; see IngestionRun for details",
+                returncode=1,
             ) from exc
 
         summary = (
