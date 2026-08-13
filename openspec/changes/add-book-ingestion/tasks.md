@@ -68,8 +68,9 @@
 
 ## 8. Seam 8 — Celery Task（排程觸發，`books/tasks.py`）
 
-- [ ] 8.1 **(red)** 撰寫測試：task 呼叫 `ingest_month` 並正確處理三種結果——成功/部分成功（`IngestionRun.status` 對應設定）、當月尚未公告（`status='skipped_not_yet_published'`，**不觸發 Celery 重試**）、非預期例外（觸發 `autoretry_for`，最多重試 3 次＋指數退避，重試上限後標記為 `failed`）；確認測試先為紅燈
-- [ ] 8.2 **(green)** 實作 Celery task 與 Celery Beat 每日排程設定（決策 10），讓 8.1 全數通過
+- [x] 8.1 **(red)** 撰寫測試：task 呼叫 `ingest_month` 並正確處理三種結果——成功/部分成功（`IngestionRun.status` 對應設定，皆正常回傳、不觸發重試）、當月尚未公告（`status='skipped_not_yet_published'`，**不觸發 Celery 重試**）、非預期結果（`status='failed'` 時 `raise IngestMonthRunFailed` 交給 `autoretry_for` 處理）；另外驗證目標月份以 Asia/Taipei 本地時間換算（不是天真地用 UTC 月份，兩者在月份邊界附近會算出不同答案）、固定帶 `trigger_type='scheduled'`；確認測試先為紅燈（`ImportError: cannot import name 'IngestMonthRunFailed'`）
+- [x] 8.2 **(green)** 實作 `ingest_current_month`（`books/tasks.py`）：`timezone.localtime(timezone.now())` 取得本地月份、呼叫 `ingest_month(month, trigger_type='scheduled')`；`status=='failed'` 時 raise 觸發 `autoretry_for=(Exception,)` ＋ `retry_backoff=True` ＋ `max_retries=3`（重試設定值另有獨立測試釘住，不重新測試 Celery 自身的重試機制），讓 8.1 全數通過；不直接測試 `autoretry_for` 的實際重試行為（那是 Celery 本身的職責），只驗證 task 本身「該不該拋例外」的判斷邏輯與重試設定值
+- [x] 8.3 新增 migration `0004_wire_real_ingestion_task`，把決策 0.7 建立的 placeholder `PeriodicTask`（`daily-ingestion-placeholder` → `books.tasks.ping`）改指向真正的排程 task（`daily-ingestion` → `books.tasks.ingest_current_month`），排程時間不變（`0 3 * * * Asia/Taipei`）；已人工驗證 forward/reverse migration 皆正確、worker 可發現 task（`[tasks] . books.tasks.ingest_current_month`）、`ModelEntry` 可正確解析排程指向新 task
 
 ## 9. 封面圖片儲存（`books/storage/s3.py`，未列為正式 TDD seam，維持一般任務拆分）
 

@@ -169,7 +169,9 @@ IngestionFailure
 - **Broker**：Redis，v1 於本機獨立 Docker 容器運行（host port 6380，避免與機器上其他專案的 Redis 容器衝突），不與其他專案共用。
 - **排程**：Celery Beat 每日固定時間（預設 03:00 Asia/Taipei，避開 Google Books/NCL 尖峰時段，可調整）觸發 `ingest_current_month` task，目標月份固定為「觸發當下所屬年月」。
 - **404（當月資料尚未公告）**：service 函式回傳明確的「尚未公告」結果，task 將 `IngestionRun.status` 設為 `skipped_not_yet_published`，**不觸發 Celery 重試**，視為正常結束。
-- **非預期錯誤**（例如資料庫連線中斷、未預期例外）：使用 Celery 的 `autoretry_for` + `retry_backoff=True` + `max_retries=3`，重試次數與間隔皆有上限；重試全部失敗後，`IngestionRun.status` 設為 `failed`，錯誤記錄於 `IngestionFailure`／log，目前無告警/通知整合，需自行查表或查 log。
+- **非預期錯誤**（例如資料庫連線中斷、未預期例外、NCL 下載逾時/網路錯誤等 `ingest_month` 判定為整批失敗的情況）：使用 Celery 的 `autoretry_for=(Exception,)` + `retry_backoff=True` + `max_retries=3`，重試次數與間隔皆有上限；錯誤記錄於 `IngestionFailure`／log，目前無告警/通知整合，需自行查表或查 log。
+  - **哪些 `IngestionRun.status` 會觸發重試**：只有 `failed`（`ingest_month` 內部已代表「這次嘗試整批沒有任何一筆成功」）——task 檢查到 `status=='failed'` 才主動 `raise`，交給 `autoretry_for` 處理。`succeeded`／`partially_failed`／`skipped_not_yet_published` 皆視為本次執行已正常結束，task 正常回傳、不觸發重試（`partially_failed` 代表批次已完成、僅部分列有問題且多半是內容本身的問題而非暫時性錯誤，重試整批意義不大；`skipped_not_yet_published` 的自然重試就是明天的排程，不需要當天重試）。
+  - **每次重試都是新的 `IngestionRun`**：`ingest_month` 每次呼叫都會 `start_ingestion_run` 建立一筆新紀錄，因此同一天的一次排程觸發若歷經多次 Celery 重試，會留下多筆各自獨立的 `IngestionRun`（皆為 `trigger_type='scheduled'`），而不是同一筆紀錄的狀態被覆寫——這是刻意設計，每次嘗試都可獨立稽核。
 - **手動觸發**（management command）：呼叫同一個 `ingest_month(month)` service 函式，不透過 Celery（同步執行），但套用相同的規則（含 404 時的行為——手動觸發下 404 視為明確錯誤訊息回報給執行者，而非靜默略過，因為使用者是主動指定月份，理應被告知該月尚無資料）。
 
 ### 11. 管理指令（Django management command）
