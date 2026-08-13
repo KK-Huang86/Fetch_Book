@@ -73,10 +73,12 @@
 
 ## 9. 封面圖片儲存（`books/storage/s3.py`，未列為正式 TDD seam，維持一般任務拆分）
 
-- [ ] 9.1 實作 NCL 圖片下載並上傳至 S3、標記 `cover_image_hosting = 'self'`
-- [ ] 9.2 Google Books 提供封面時僅保留原始網址、標記 `hotlink`，不呼叫上傳邏輯
-- [ ] 9.3 兩來源皆無封面時，欄位維持明確空值，不中斷批次
-- [ ] 9.4（部署前置，非程式碼）確認 S3 bucket 與 CloudFront + OAC 設定就緒（可等 2.5 確認 NCL 是否真的提供封面欄位後再排優先序）
+> **範圍縮減決定**（issue #6，已與使用者確認）：2.5 已證實 NCL CSV 不含封面欄位，v1 實務上封面 100% 來自 Google Books（僅 hotlink）。因此 9.1（NCL→S3 上傳）與 9.4（真實 AWS 基礎設施佈建）**延後**，等未來 NCL 真的提供封面欄位、或決定要正式部署時再處理（屆時規劃以 Terraform 管理 S3/CloudFront，機密資料放 `terraform.tfvars`，不進版控）。`books/storage/s3.py` 維持空模組。9.2/9.3 描述的行為已在 issue #4 的 `merge_book_fields`（`books/services/merge.py`）實作並測試完成，不需要額外程式碼。
+
+- [ ] 9.1（延後）實作 NCL 圖片下載並上傳至 S3、標記 `cover_image_hosting = 'self'`——等 NCL 真的提供封面欄位時再實作
+- [x] 9.2 Google Books 提供封面時僅保留原始網址、標記 `hotlink`，不呼叫上傳邏輯——已由 `merge_book_fields` 實作（見 `books/tests/test_merge.py::TestCoverImagePolicy::test_new_book_uses_google_cover_when_found`／`test_http_google_cover_url_is_upgraded_to_https`）
+- [x] 9.3 兩來源皆無封面時，欄位維持明確空值，不中斷批次——已由 `merge_book_fields` 實作（見 `test_new_book_with_no_google_result_has_no_cover`／`test_google_found_but_no_cover_image_url_leaves_cover_empty`）
+- [ ] 9.4（延後，部署前置，非程式碼）以 Terraform 建置 S3 bucket 與 CloudFront + OAC；機密資料（AWS 憑證等）寫入 `terraform.tfvars`（比照 `.env` 模式，加入 `.gitignore`，另備 `terraform.tfvars.example` 範本）——等真的需要正式部署時再做
 
 ## 10. 人工 Smoke Test（不屬於自動化測試）
 
