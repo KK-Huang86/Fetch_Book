@@ -135,9 +135,9 @@ IngestionFailure
 呼叫 Google Books 前，先查詢資料庫該 ISBN 現有的 `cover_image_url` 與是否已有 `source='google_books'` 的 `Category` 關聯：兩者皆非空則跳過查詢；否則才呼叫 Google Books API。
 
 ### 7. 封面圖片儲存政策
-- NCL 提供封面網址時：下載圖片，上傳至自有 S3 bucket，`cover_image_hosting = 'self'`，`cover_image_url` 為 CloudFront 網域網址。
-- 僅 Google Books 提供封面時：不下載，`cover_image_hosting = 'hotlink'`，`cover_image_url` 為 Google Books 原始圖片網址，並於系統文件/App 端顯示 attribution。
-- S3 + CloudFront（含 OAC）為一次性基礎設施佈建，不在本次程式碼 tasks 範圍內（見 Open Questions）。
+- NCL 提供封面網址時：下載圖片，上傳至自有 S3 bucket，`cover_image_hosting = 'self'`，`cover_image_url` 為 CloudFront 網域網址。**已確認 NCL CSV 不含封面欄位（決策 8），此路徑 v1 實務上不會被觸發，`books/storage/s3.py` 的實作與對應真實 AWS 資源延後（issue #6，已與使用者確認），等 NCL 未來真的提供封面欄位時再處理。**
+- 僅 Google Books 提供封面時：不下載，`cover_image_hosting = 'hotlink'`，`cover_image_url` 為 Google Books 原始圖片網址，並於系統文件/App 端顯示 attribution。**v1 實務上唯一會發生的封面路徑**，已在 `merge_book_fields`（決策 5）實作。
+- S3 + CloudFront（含 OAC）基礎設施延後至實際需要時佈建，屆時規劃以 **Terraform** 管理（IaC），機密資料（AWS 憑證等）寫入 `terraform.tfvars`，比照 `.env` 模式加入 `.gitignore`、另備 `terraform.tfvars.example` 範本，不進版控。
 
 ### 8. NCL CSV 契約
 - 網址：`https://isbn.ncl.edu.tw/NEW_ISBNNet/opendata/[YYYYMM]_isbn.csv`，**年月為西元年**（已實測驗證：`202508` 回 200，民國年 `11508` 回 404）。
@@ -244,6 +244,6 @@ fetch_book/
 ## Open Questions
 
 - Google Books API 實際配額數字與費用門檻：待申請金鑰後確認（不影響目前的架構與 tasks 拆分）。
-- S3 + CloudFront（含 OAC）基礎設施的實際佈建（bucket 政策、CloudFront 設定）：屬於部署前置工作，非本次程式碼 tasks 範圍，待實作 NCL 圖片上傳功能前另行處理。
+- S3 + CloudFront（含 OAC）基礎設施的實際佈建：已決定延後（見決策 7），等 NCL 未來真的提供封面欄位、或決定要正式部署時，以 Terraform（IaC）建置。
 - 正式雲端資料庫（AWS RDS）與 Redis（ElastiCache）的部署時機與方式：留待未來的部署 change，v1 僅本機 Docker。
 - 每日排程的確切觸發時間（目前預設 03:00 Asia/Taipei）：若之後觀察到 NCL 實際公告時間規律，可再調整，不影響架構。
