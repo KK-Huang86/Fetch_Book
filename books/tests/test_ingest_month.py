@@ -273,3 +273,55 @@ class TestUnexpectedExceptionsDoNotLeaveARunningRun:
         run = IngestionRun.objects.get(month="2025-11")
         assert run.status != IngestionRun.Status.RUNNING
         assert run.finished_at is not None
+
+    @patch("books.services.ingest.query_google_books_by_isbn")
+    @patch("books.services.ingest.download_ncl_csv")
+    def test_fatal_error_partway_through_batch_keeps_total_consistent(
+        self, mock_download, mock_google
+    ):
+        # PR #13 review round 2, finding 1: `total` used to stay at its
+        # initial 0 until the whole book loop finished, so a fatal error
+        # partway through (here: on the second of four books) would save
+        # total=0 even though parsing had already determined total=4 —
+        # total != succeeded + failed. ncl_normal.csv has 4 rows; the
+        # first ISBN's Google lookup succeeds, the second raises, so the
+        # loop never reaches the third/fourth.
+        mock_download.return_value = _read("ncl_normal.csv")
+
+        def _side_effect(isbn13, *a, **kw):
+            if isbn13 == "9786269935468":
+                return _found(isbn13)
+            raise RuntimeError("adapter bug on the second book")
+
+        mock_google.side_effect = _side_effect
+
+        with pytest.raises(RuntimeError):
+            ingest_month("2025-12", trigger_type=IngestionRun.TriggerType.SCHEDULED)
+
+        run = IngestionRun.objects.get(month="2025-12")
+        assert run.status == IngestionRun.Status.FAILED
+        assert run.total == 4
+        assert run.succeeded == 1
+        # v1 choice (no separate skipped/aborted counter): everything not
+        # confirmed succeeded counts as failed, so total==succeeded+failed
+        # always holds, including on a fatal mid-batch abort.
+        assert run.failed == 3
+        assert run.total == run.succeeded + run.failed
+
+    def test_fatal_guard_itself_failing_to_record_still_finishes_the_run(self):
+        # PR #13 review round 2, finding 2 (accepted as a cheap
+        # improvement, not just a known limitation): if
+        # record_ingestion_failure itself raises while handling a fatal
+        # error, finish_ingestion_run must still be attempted — the run
+        # must not additionally get stuck in 'running' because the
+        # *failure bookkeeping* failed.
+        with patch("books.services.ingest.download_ncl_csv", side_effect=RuntimeError("boom")), patch(
+            "books.services.ingest.record_ingestion_failure",
+            side_effect=RuntimeError("DB write failed while recording the failure"),
+        ):
+            with pytest.raises(RuntimeError):
+                ingest_month("2026-01", trigger_type=IngestionRun.TriggerType.SCHEDULED)
+
+        run = IngestionRun.objects.get(month="2026-01")
+        assert run.status != IngestionRun.Status.RUNNING
+        assert run.finished_at is not None
