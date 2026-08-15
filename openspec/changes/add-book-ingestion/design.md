@@ -167,9 +167,13 @@ IngestionFailure
 
 ### 10. 排程與執行方式（Celery + Celery Beat）
 - **Broker**：Redis，v1 於本機獨立 Docker 容器運行（host port 6380，避免與機器上其他專案的 Redis 容器衝突），不與其他專案共用。
-- **排程**：Celery Beat 每日固定時間（預設 03:00 Asia/Taipei，避開 Google Books/NCL 尖峰時段，可調整）觸發 `ingest_current_month` task，目標月份固定為「觸發當下所屬年月」。
-- **404（當月資料尚未公告）**：service 函式回傳明確的「尚未公告」結果，task 將 `IngestionRun.status` 設為 `skipped_not_yet_published`，**不觸發 Celery 重試**，視為正常結束。
-- **非預期錯誤**（例如資料庫連線中斷、未預期例外）：使用 Celery 的 `autoretry_for` + `retry_backoff=True` + `max_retries=3`，重試次數與間隔皆有上限；重試全部失敗後，`IngestionRun.status` 設為 `failed`，錯誤記錄於 `IngestionFailure`／log，目前無告警/通知整合，需自行查表或查 log。
+- **排程**：Celery Beat 每日固定時間（預設 03:00 Asia/Taipei，避開 Google Books/NCL 尖峰時段，可調整）觸發 `books.tasks.trigger_daily_ingestion`。
+- **兩個 task 分工**（PR #16 review 修正，避免 retry 跨月份邊界抓錯月份）：
+  - `trigger_daily_ingestion`：Beat 實際觸發的入口，**不重試**。先檢查 `GOOGLE_BOOKS_API_KEY` 是否設定，未設定直接 `raise ImproperlyConfigured`（設定錯誤重試無法解決，應直接曝露、不浪費重試次數）；接著以 `timezone.localtime(timezone.now())` 算出目標月份（僅算這一次），透過 `ingest_month_task.delay(month)` 交給下一個 task 非同步執行。
+  - `ingest_month_task(month)`：實際呼叫 `ingest_month(month, trigger_type='scheduled')` 的可重試 task，`month` 是明確的參數而非內部即時計算——因為 Celery 的 `autoretry_for` 是「用相同參數重新呼叫同一個 task」，若月份是在可重試的 task 內部才計算，重試因為退避延遲跨過月份邊界時（例如第一次嘗試在月底 23:59、重試延遲到隔天 00:03），就會變成處理**下一個月**、而不是重試原本失敗的那個月。
+- **404（當月資料尚未公告）**：`ingest_month` 回傳明確的「尚未公告」結果，`ingest_month_task` 讓 `IngestionRun.status` 維持 `skipped_not_yet_published`，**不觸發 Celery 重試**，視為正常結束。
+- **重試判斷不是單純看 `status=='failed'`**：`IngestionRun.Status.FAILED` 同時涵蓋「暫時性/系統性問題」（NCL 無法連線）與「永久性資料內容問題」（例如整份 CSV 每一列都缺 ISBN、每一筆 upsert 都因固定資料內容失敗）——後者重試 3 次結果都一樣，只會重複打 NCL/Google API、產生多筆內容相同的 `IngestionRun`/`IngestionFailure`，浪費資源。因此新增 `books/services/ingest.py::is_retryable_failure(run)`：只有 `status=='failed'` 且該次執行留有 `stage='ncl_download'` 的 `IngestionFailure`（代表連 CSV 都下載不到，明確是系統性問題）才視為可重試，`ingest_month_task` 據此才 `raise IngestMonthRunFailed` 交給 `autoretry_for=(Exception,)` + `retry_backoff=True`（`retry_backoff_max=600`、`retry_jitter=True`）+ `max_retries=3` 處理；只有解析失敗或 upsert 失敗導致的 `failed` 不重試，正常回傳。錯誤記錄於 `IngestionFailure`／log，目前無告警/通知整合，需自行查表或查 log。
+- **每次重試都是新的 `IngestionRun`**：`ingest_month` 每次呼叫都會 `start_ingestion_run` 建立一筆新紀錄，因此同一天的一次排程觸發若歷經多次 Celery 重試，會留下多筆各自獨立的 `IngestionRun`（皆為 `trigger_type='scheduled'`、相同 `month`），而不是同一筆紀錄的狀態被覆寫——這是刻意設計，每次嘗試都可獨立稽核。
 - **手動觸發**（management command）：呼叫同一個 `ingest_month(month)` service 函式，不透過 Celery（同步執行），但套用相同的規則（含 404 時的行為——手動觸發下 404 視為明確錯誤訊息回報給執行者，而非靜默略過，因為使用者是主動指定月份，理應被告知該月尚無資料）。
 
 ### 11. 管理指令（Django management command）

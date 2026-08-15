@@ -374,3 +374,16 @@ def ingest_month(month: str, trigger_type: str) -> IngestionRun:
                 google_enriched=google_enriched,
             )
         raise
+
+
+def is_retryable_failure(run: IngestionRun) -> bool:
+    """PR #16 review: IngestionRun.Status.FAILED covers both transient
+    problems (NCL unreachable — worth a same-day Celery retry, see
+    books/tasks.py) and permanent data-content problems (every row in
+    this month's CSV is invalid, a persistent upsert error) that retrying
+    with identical input won't fix. Only a stage=ncl_download failure
+    signals the former; anything else (or no failure recorded at all,
+    an unexpected shape) defaults to not retrying."""
+    if run.status != IngestionRun.Status.FAILED:
+        return False
+    return run.failures.filter(stage=IngestionFailure.Stage.NCL_DOWNLOAD).exists()
